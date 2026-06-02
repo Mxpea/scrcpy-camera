@@ -1,4 +1,1 @@
-#!/bin/sh
-export SCRIPT_HOME="$(dirname "$0")"
-export FORMATTER_NAME="swift-format"
-zsh "$SCRIPT_HOME/.run-format.zsh" "$@"
+.run-format.zsh
