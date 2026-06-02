@@ -40,7 +40,13 @@
 #define SETTING_CAMERA_SIZE "camera_size"
 #define SETTING_HW_DECODING "hw_decoding"
 
+#ifdef _WIN32
 static const char *const DEFAULT_ADB_PATH = "adb.exe";
+#define ADB_FILTER "Executable (*.exe);;All Files (*.*)"
+#else
+static const char *const DEFAULT_ADB_PATH = "adb";
+#define ADB_FILTER "All Files (*.*)"
+#endif
 static const char *const DEFAULT_SCRCPY_VERSION = "4.0";
 
 struct scrcpy_source {
@@ -220,7 +226,7 @@ static obs_properties_t *scrcpy_source_properties(void *unused)
 	obs_property_t *cam_id_prop;
 
 	obs_properties_t *props = obs_properties_create();
-	obs_properties_add_path(props, SETTING_ADB_PATH, "ADB executable", OBS_PATH_FILE, "Executable (*.exe);;All Files (*.*)", NULL);
+	obs_properties_add_path(props, SETTING_ADB_PATH, "ADB executable", OBS_PATH_FILE, ADB_FILTER, NULL);
 
 	obs_property_t *device_list = obs_properties_add_list(props, SETTING_DEVICE_SERIAL, "ADB device",
 					       OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
