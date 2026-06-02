@@ -20,13 +20,22 @@ By integrating `scrcpy` directly into OBS Studio, this plugin eliminates the nee
 - **Configurable Video Settings:** Adjust video codec (H.264, H.265), bitrate, maximum resolution, and camera size right from the OBS source properties.
 - **Automatic Device Discovery:** Easily select from a list of connected ADB devices.
 
+## Showcase
+
+![Camera and Screen with scrcpy-camera](web/1.png)
+*Camera and Screen with scrcpy-camera*
+
+![Low CPU usage with active hardware decoding while using the Camera with scrcpy-camera](web/2.png)
+*Low CPU usage with active hardware decoding while using the Camera with scrcpy-camera*
+
 ## Requirements
 
 - **OBS Studio:** Compatible with the latest versions of OBS Studio.
 - **ADB (Android Debug Bridge):** Required to communicate with the Android device. You can specify a custom path to the ADB executable in the source properties.
 - **scrcpy-server.jar:** The server component of `scrcpy` that runs on the Android device. This needs to be available on your system.
-  > [!IMPORTANT]
-  > This plugin is currently only compatible with **scrcpy v4.0**. You must download the exact `scrcpy-server-v4.0` file from the [scrcpy v4.0 release page](https://github.com/Genymobile/scrcpy/releases/tag/v4.0) and rename it to `scrcpy-server.jar`. Other versions are not guaranteed to work.
+
+> [!IMPORTANT]
+> This plugin is currently only compatible with **scrcpy v4.0**. You must download the exact `scrcpy-server-v4.0` file from the [scrcpy v4.0 release page](https://github.com/Genymobile/scrcpy/releases/tag/v4.0) and rename it to `scrcpy-server.jar`. Other versions are not guaranteed to work.
 
 ## Usage
 
