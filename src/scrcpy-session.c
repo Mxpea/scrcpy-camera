@@ -928,21 +928,28 @@ static unsigned __stdcall scrcpy_session_worker(void *opaque)
 	uint32_t width = 0;
 	uint32_t height = 0;
 	WSADATA wsadata;
+	int reconnect_attempts = 0;
 
 	if (!session)
 		return 0;
 
-	session->video_socket = INVALID_SOCKET;
-	session->server_process = NULL;
-
 	if (WSAStartup(MAKEWORD(2, 2), &wsadata) != 0) {
 		obs_log(LOG_ERROR, "WSAStartup failed");
-		goto done;
+		InterlockedExchange(&session->running, 0);
+		return 0;
 	}
 
-	_snprintf_s(command, sizeof(command), _TRUNCATE, "\"%s\" start-server", session->adb_path);
-	if (!scrcpy_command_step(session, "Start ADB server", command))
-		goto cleanup_winsock;
+	while (!scrcpy_should_stop(session)) {
+		session->video_socket = INVALID_SOCKET;
+		session->server_process = NULL;
+		codec_id = AV_CODEC_ID_NONE;
+		decoder_context = NULL;
+		width = 0;
+		height = 0;
+
+		_snprintf_s(command, sizeof(command), _TRUNCATE, "\"%s\" start-server", session->adb_path);
+		if (!scrcpy_command_step(session, "Start ADB server", command))
+			goto cleanup_winsock;
 
 	_snprintf_s(command, sizeof(command), _TRUNCATE,
 		    "\"%s\" -s %s push \"%s\" /data/local/tmp/scrcpy-server.jar", session->adb_path,
@@ -1011,16 +1018,14 @@ static unsigned __stdcall scrcpy_session_worker(void *opaque)
 	 * connect+handshake sequence to account for this race.
 	 */
 	{
-		int max_attempts = 30;
+		int max_attempts = 15;
 		int connect_attempt;
 		bool handshake_ok = false;
 
 		/* Camera startup is slower: Camera2 API init, capture session
 		 * setup, and encoder configuration can take several seconds. */
 		if (strcmp(session->video_source, "camera") == 0) {
-			obs_log(LOG_INFO, "scrcpy camera mode: waiting 2s for camera init");
-			Sleep(2000);
-			max_attempts = 50;
+			max_attempts = 25;
 		}
 
 		for (connect_attempt = 0; connect_attempt < max_attempts; ++connect_attempt) {
@@ -1032,19 +1037,20 @@ static unsigned __stdcall scrcpy_session_worker(void *opaque)
 
 			if (scrcpy_read_handshake(session, &codec_id, &width, &height)) {
 				handshake_ok = true;
+				reconnect_attempts = 0;
 				break;
 			}
 
 			/* Handshake failed - server probably not ready. Close socket and retry. */
 			obs_log(LOG_DEBUG,
-				"scrcpy handshake attempt %d/%d failed, retrying in 200ms",
+				"scrcpy handshake attempt %d/%d failed, retrying in 500ms",
 				connect_attempt + 1, max_attempts);
 			if (session->video_socket != INVALID_SOCKET) {
 				shutdown(session->video_socket, SD_BOTH);
 				closesocket(session->video_socket);
 				session->video_socket = INVALID_SOCKET;
 			}
-			Sleep(200);
+			Sleep(500);
 		}
 		if (!handshake_ok) {
 			obs_log(LOG_ERROR, "scrcpy handshake failed after %d attempts", connect_attempt);
@@ -1062,20 +1068,43 @@ static unsigned __stdcall scrcpy_session_worker(void *opaque)
 		session->local_port);
 
 cleanup_winsock:
-	if (decoder_context)
-		avcodec_free_context(&decoder_context);
+		if (decoder_context)
+			avcodec_free_context(&decoder_context);
 
-	scrcpy_close_stream_handles(session);
+		scrcpy_close_stream_handles(session);
 
-	_snprintf_s(command, sizeof(command), _TRUNCATE, "\"%s\" -s %s forward --remove tcp:%hu", session->adb_path,
-		    session->device_serial, session->local_port);
-	if (!scrcpy_run_process(session, "Remove adb forward", command, true, true, NULL)) {
-		obs_log(LOG_INFO, "adb forward removal is optional during cleanup for tcp:%hu", session->local_port);
+		_snprintf_s(command, sizeof(command), _TRUNCATE, "\"%s\" -s %s forward --remove tcp:%hu", session->adb_path,
+			    session->device_serial, session->local_port);
+		if (!scrcpy_run_process(session, "Remove adb forward", command, true, true, NULL)) {
+			obs_log(LOG_INFO, "adb forward removal is optional during cleanup for tcp:%hu", session->local_port);
+		}
+
+		if (scrcpy_should_stop(session))
+			break;
+
+		reconnect_attempts++;
+		if (reconnect_attempts >= 100) {
+			obs_log(LOG_ERROR, "scrcpy auto-reconnect failed 100 times. Giving up.");
+			break;
+		}
+
+		int delay_ms = 2000;
+		if (reconnect_attempts >= 50) {
+			delay_ms = 10000;
+		} else if (reconnect_attempts >= 15) {
+			delay_ms = 5000;
+		}
+		
+		obs_log(LOG_INFO, "scrcpy auto-reconnect attempt %d, waiting %d ms...", reconnect_attempts, delay_ms);
+		
+		for (int i = 0; i < delay_ms; i += 200) {
+			if (scrcpy_should_stop(session)) break;
+			Sleep(200);
+		}
 	}
 
 	WSACleanup();
 
-	done:
 	InterlockedExchange(&session->running, 0);
 	return 0;
 }

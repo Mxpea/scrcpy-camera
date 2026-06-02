@@ -220,7 +220,7 @@ static obs_properties_t *scrcpy_source_properties(void *unused)
 	obs_property_t *cam_id_prop;
 
 	obs_properties_t *props = obs_properties_create();
-	obs_properties_add_text(props, SETTING_ADB_PATH, "ADB executable", OBS_TEXT_DEFAULT);
+	obs_properties_add_path(props, SETTING_ADB_PATH, "ADB executable", OBS_PATH_FILE, "Executable (*.exe);;All Files (*.*)", NULL);
 
 	obs_property_t *device_list = obs_properties_add_list(props, SETTING_DEVICE_SERIAL, "ADB device",
 					       OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -228,7 +228,7 @@ static obs_properties_t *scrcpy_source_properties(void *unused)
 		scrcpy_refresh_device_list(context, device_list);
 
 	obs_properties_add_button(props, "refresh_devices", "Refresh device list", scrcpy_refresh_button_clicked);
-	obs_properties_add_text(props, SETTING_SERVER_JAR_PATH, "scrcpy-server.jar path", OBS_TEXT_DEFAULT);
+	obs_properties_add_path(props, SETTING_SERVER_JAR_PATH, "scrcpy-server.jar path", OBS_PATH_FILE, "Jar Files (*.jar);;All Files (*.*)", NULL);
 	obs_properties_add_text(props, SETTING_SCRCPY_VERSION, "scrcpy protocol version", OBS_TEXT_DEFAULT);
 
 	vsource_list = obs_properties_add_list(props, SETTING_VIDEO_SOURCE, "Video source",
