@@ -1,1 +1,4 @@
-.run-format.zsh
+#!/bin/sh
+export SCRIPT_HOME="$(dirname "$0")"
+export FORMATTER_NAME="gersemi"
+zsh "$SCRIPT_HOME/.run-format.zsh" "$@"
