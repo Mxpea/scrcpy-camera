@@ -27,6 +27,15 @@ runs:
         checkGlob: "'*.cmake' '*CMakeLists.txt'"
         diffFilter: 'ACM'
 
+    - name: Cache Homebrew Downloads 📦
+      if: runner.os == 'Linux' && fromJSON(steps.checks.outputs.hasChangedFiles)
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/Homebrew/downloads
+        key: ${{ runner.os }}-brew-gersemi-${{ hashFiles('.github/actions/run-gersemi/action.yaml') }}
+        restore-keys: |
+          ${{ runner.os }}-brew-gersemi-
+
     - name: Install Dependencies 🛍️
       if: runner.os == 'Linux' && fromJSON(steps.checks.outputs.hasChangedFiles)
       shell: bash
