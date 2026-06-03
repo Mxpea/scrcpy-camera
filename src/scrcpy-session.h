@@ -23,8 +23,10 @@
 
 struct scrcpy_session;
 struct obs_source_frame;
+struct obs_source_audio;
 
 typedef void (*scrcpy_session_frame_callback)(void *opaque, const struct obs_source_frame *frame);
+typedef void (*scrcpy_session_audio_callback)(void *opaque, const struct obs_source_audio *audio);
 
 struct scrcpy_session_config {
 	const char *adb_path;
@@ -39,8 +41,14 @@ struct scrcpy_session_config {
 	uint32_t video_bit_rate;
 	uint16_t max_size;
 	bool hw_decoding;
+	bool audio_enabled;
+	const char *audio_source;
+	const char *audio_codec;
+	uint32_t audio_bit_rate;
 	scrcpy_session_frame_callback on_frame;
 	void *on_frame_opaque;
+	scrcpy_session_audio_callback on_audio;
+	void *on_audio_opaque;
 };
 
 struct scrcpy_session *scrcpy_session_create(void);

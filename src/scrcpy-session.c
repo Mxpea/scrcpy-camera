@@ -24,6 +24,8 @@
 #include <libavutil/pixfmt.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/pixdesc.h>
+#include <libavutil/opt.h>
+#include <libswresample/swresample.h>
 
 #include <plugin-support.h>
 
@@ -61,13 +63,23 @@ struct scrcpy_session {
 	bool hw_decoding;
 	enum AVHWDeviceType hw_device_type;
 
+	bool audio_enabled;
+	char *audio_source;
+	char *audio_codec;
+	uint32_t audio_bit_rate;
+
 	scrcpy_session_frame_callback on_frame;
 	void *on_frame_opaque;
+	scrcpy_session_audio_callback on_audio;
+	void *on_audio_opaque;
+	uint64_t next_audio_ts;
 	char socket_name[64];
 
 	HANDLE worker_thread;
+	HANDLE audio_thread;
 	HANDLE server_process;
 	SOCKET video_socket;
+	SOCKET audio_socket;
 	volatile LONG stop_requested;
 	volatile LONG running;
 };
@@ -80,14 +92,18 @@ static bool scrcpy_run_process(struct scrcpy_session *session, const char *step,
 static void scrcpy_log_pipe_output(const char *prefix, HANDLE pipe_handle);
 static bool scrcpy_should_stop(struct scrcpy_session *session);
 static bool scrcpy_open_video_socket(struct scrcpy_session *session);
+static bool scrcpy_open_audio_socket(struct scrcpy_session *session);
 static bool scrcpy_read_exact(struct scrcpy_session *session, SOCKET sock, void *buffer, size_t size);
 static void scrcpy_log_socket_available(const char *label, SOCKET sock);
 static bool scrcpy_read_handshake(struct scrcpy_session *session, enum AVCodecID *codec_id, uint32_t *width,
 				  uint32_t *height);
+static bool scrcpy_read_audio_handshake(struct scrcpy_session *session, enum AVCodecID *codec_id);
 static uint32_t scrcpy_read_be32(const uint8_t *data);
 static bool scrcpy_init_decoder(struct scrcpy_session *session, enum AVCodecID codec_id, AVCodecContext **decoder_context);
 static bool scrcpy_decode_loop(struct scrcpy_session *session, AVCodecContext *decoder_context, uint32_t width,
 			       uint32_t height);
+static bool scrcpy_audio_decode_loop(struct scrcpy_session *session, AVCodecContext *decoder_context, bool is_raw_pcm);
+static unsigned __stdcall scrcpy_audio_worker(void *opaque);
 static void scrcpy_close_stream_handles(struct scrcpy_session *session);
 
 #pragma comment(lib, "Ws2_32.lib")
@@ -102,6 +118,8 @@ static void scrcpy_copy_config(struct scrcpy_session *session, const struct scrc
 	bfree(session->video_source);
 	bfree(session->camera_id);
 	bfree(session->camera_size);
+	bfree(session->audio_source);
+	bfree(session->audio_codec);
 
 	session->adb_path = bstrdup(config->adb_path ? config->adb_path : "adb.exe");
 	session->device_serial = bstrdup(config->device_serial ? config->device_serial : "");
@@ -116,13 +134,21 @@ static void scrcpy_copy_config(struct scrcpy_session *session, const struct scrc
 		bstrdup(config->camera_id && config->camera_id[0] ? config->camera_id : "0");
 	session->camera_size =
 		bstrdup(config->camera_size && config->camera_size[0] ? config->camera_size : "1920x1080");
+	session->audio_source =
+		bstrdup(config->audio_source && config->audio_source[0] ? config->audio_source : "output");
+	session->audio_codec =
+		bstrdup(config->audio_codec && config->audio_codec[0] ? config->audio_codec : "opus");
 	session->local_port = config->local_port ? config->local_port : SCRCPY_DEFAULT_PORT;
 	session->video_bit_rate = config->video_bit_rate ? config->video_bit_rate : 8000000;
+	session->audio_bit_rate = config->audio_bit_rate ? config->audio_bit_rate : 128000;
 	session->max_size = config->max_size;
 	session->hw_decoding = config->hw_decoding;
+	session->audio_enabled = config->audio_enabled;
 	session->scid = (GetCurrentProcessId() ^ GetTickCount()) & 0x7fffffffU;
 	session->on_frame = config->on_frame;
 	session->on_frame_opaque = config->on_frame_opaque;
+	session->on_audio = config->on_audio;
+	session->on_audio_opaque = config->on_audio_opaque;
 	_snprintf_s(session->socket_name, sizeof(session->socket_name), _TRUNCATE, "scrcpy_%08x", session->scid);
 }
 
@@ -146,6 +172,8 @@ void scrcpy_session_destroy(struct scrcpy_session *session)
 	bfree(session->video_source);
 	bfree(session->camera_id);
 	bfree(session->camera_size);
+	bfree(session->audio_source);
+	bfree(session->audio_codec);
 	bfree(session);
 }
 
@@ -192,6 +220,12 @@ void scrcpy_session_stop(struct scrcpy_session *session)
 	InterlockedExchange(&session->stop_requested, 1);
 	scrcpy_close_stream_handles(session);
 
+	if (session->audio_thread) {
+		WaitForSingleObject(session->audio_thread, INFINITE);
+		CloseHandle(session->audio_thread);
+		session->audio_thread = NULL;
+	}
+
 	if (!session->worker_thread) {
 		InterlockedExchange(&session->running, 0);
 		return;
@@ -218,6 +252,12 @@ static void scrcpy_close_stream_handles(struct scrcpy_session *session)
 		shutdown(session->video_socket, SD_BOTH);
 		closesocket(session->video_socket);
 		session->video_socket = INVALID_SOCKET;
+	}
+
+	if (session->audio_socket != INVALID_SOCKET) {
+		shutdown(session->audio_socket, SD_BOTH);
+		closesocket(session->audio_socket);
+		session->audio_socket = INVALID_SOCKET;
 	}
 
 	if (session->server_process) {
@@ -919,6 +959,319 @@ fail:
 	return false;
 }
 
+static bool scrcpy_open_audio_socket(struct scrcpy_session *session)
+{
+	SOCKET sock = INVALID_SOCKET;
+	struct sockaddr_in addr;
+	int timeout_ms = 250;
+	int attempt;
+
+	if (!session)
+		return false;
+
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(session->local_port);
+	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+	for (attempt = 0; attempt < 10; ++attempt) {
+		if (scrcpy_should_stop(session))
+			return false;
+
+		sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (sock == INVALID_SOCKET)
+			return false;
+
+		if (connect(sock, (const struct sockaddr *)&addr, sizeof(addr)) == 0) {
+			setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout_ms, sizeof(timeout_ms));
+			session->audio_socket = sock;
+			obs_log(LOG_DEBUG, "connected to scrcpy audio TCP port %hu", session->local_port);
+			return true;
+		}
+
+		closesocket(sock);
+		sock = INVALID_SOCKET;
+		Sleep(100);
+	}
+
+	obs_log(LOG_ERROR, "unable to connect to local scrcpy audio socket on tcp:%hu", session->local_port);
+	return false;
+}
+
+static bool scrcpy_read_audio_handshake(struct scrcpy_session *session, enum AVCodecID *codec_id)
+{
+	uint8_t codec_bytes[4];
+	uint32_t codec;
+
+	if (!scrcpy_read_exact(session, session->audio_socket, codec_bytes, sizeof(codec_bytes))) {
+		obs_log(LOG_ERROR, "failed to read scrcpy audio codec id");
+		return false;
+	}
+
+	codec = scrcpy_read_be32(codec_bytes);
+	if (codec == 0x6f707573U) {
+		*codec_id = AV_CODEC_ID_OPUS;
+		obs_log(LOG_INFO, "scrcpy audio codec: opus");
+	} else if (codec == 0x00616163U) {
+		*codec_id = AV_CODEC_ID_AAC;
+		obs_log(LOG_INFO, "scrcpy audio codec: aac");
+	} else if (codec == 0x00726177U) {
+		*codec_id = AV_CODEC_ID_NONE; /* raw PCM */
+		obs_log(LOG_INFO, "scrcpy audio codec: raw PCM");
+	} else if (codec == 0x666c6163U) {
+		*codec_id = AV_CODEC_ID_FLAC;
+		obs_log(LOG_INFO, "scrcpy audio codec: flac");
+	} else {
+		obs_log(LOG_ERROR, "unsupported scrcpy audio codec id: 0x%08x", codec);
+		return false;
+	}
+
+	return true;
+}
+
+static bool scrcpy_audio_decode_loop(struct scrcpy_session *session, AVCodecContext *decoder_context, bool is_raw_pcm)
+{
+	uint8_t header[SCRCPY_FRAME_HEADER_SIZE];
+	AVPacket *packet = av_packet_alloc();
+	AVFrame *frame = is_raw_pcm ? NULL : av_frame_alloc();
+	SwrContext *swr_ctx = NULL;
+	uint8_t *resample_buf = NULL;
+	int resample_buf_size = 0;
+
+	if (!packet || (!is_raw_pcm && !frame)) {
+		obs_log(LOG_ERROR, "unable to allocate audio ffmpeg objects");
+		av_packet_free(&packet);
+		av_frame_free(&frame);
+		return false;
+	}
+
+	obs_log(LOG_INFO, "scrcpy audio decode loop starting (socket=%lld, raw_pcm=%d)",
+		(long long)session->audio_socket, is_raw_pcm);
+
+	while (!scrcpy_should_stop(session)) {
+		uint32_t payload_size;
+
+		if (!scrcpy_read_exact(session, session->audio_socket, header, sizeof(header))) {
+			obs_log(LOG_WARNING, "scrcpy audio decode loop: header read failed (WSA=%d)",
+				WSAGetLastError());
+			break;
+		}
+
+		payload_size = scrcpy_read_be32(header + 8);
+		if (payload_size == 0)
+			continue;
+
+		/*
+		 * Flag bit layout (same as video):
+		 * bit 7 (0x80) of header[0]: not used for audio (no session packet)
+		 * bit 6 (0x40) of header[0]: codec config
+		 * bit 5 (0x20) of header[0]: key frame / end of stream
+		 */
+
+		av_packet_unref(packet);
+		if (av_new_packet(packet, (int)payload_size) < 0) {
+			obs_log(LOG_ERROR, "scrcpy audio decode loop: av_new_packet failed (%u)", payload_size);
+			break;
+		}
+
+		if (!scrcpy_read_exact(session, session->audio_socket, packet->data, payload_size)) {
+			obs_log(LOG_WARNING, "scrcpy audio decode loop: payload read failed (%u bytes)", payload_size);
+			av_packet_unref(packet);
+			break;
+		}
+
+		/* Skip codec config packets for audio */
+		if ((header[0] & 0x40U) != 0) {
+			av_packet_unref(packet);
+			continue;
+		}
+
+		if (is_raw_pcm) {
+			/*
+			 * Raw PCM from scrcpy: 16-bit signed LE, stereo, 48kHz.
+			 * Deliver directly to OBS.
+			 */
+			struct obs_source_audio obs_audio;
+			memset(&obs_audio, 0, sizeof(obs_audio));
+			obs_audio.data[0] = packet->data;
+			obs_audio.frames = payload_size / (2 * 2); /* 2 bytes/sample * 2 channels */
+			obs_audio.speakers = SPEAKERS_STEREO;
+			obs_audio.format = AUDIO_FORMAT_16BIT;
+			obs_audio.samples_per_sec = 48000;
+			uint64_t now = os_gettime_ns();
+			if (session->next_audio_ts == 0 || now > session->next_audio_ts + 100000000ULL || now < session->next_audio_ts - 100000000ULL)
+				session->next_audio_ts = now;
+
+			obs_audio.timestamp = session->next_audio_ts;
+			session->next_audio_ts += (uint64_t)obs_audio.frames * 1000000000ULL / obs_audio.samples_per_sec;
+
+			if (session->on_audio)
+				session->on_audio(session->on_audio_opaque, &obs_audio);
+			av_packet_unref(packet);
+			continue;
+		}
+
+		/* Decode compressed audio (Opus, AAC, FLAC) */
+		int send_ret = avcodec_send_packet(decoder_context, packet);
+		av_packet_unref(packet);
+		if (send_ret < 0 && send_ret != AVERROR(EAGAIN)) {
+			obs_log(LOG_ERROR, "scrcpy audio decode loop: avcodec_send_packet failed (%d)", send_ret);
+			break;
+		}
+
+		for (;;) {
+			int recv_ret = avcodec_receive_frame(decoder_context, frame);
+			if (recv_ret == AVERROR(EAGAIN) || recv_ret == AVERROR_EOF)
+				break;
+			if (recv_ret < 0) {
+				obs_log(LOG_ERROR, "scrcpy audio decode loop: avcodec_receive_frame failed (%d)", recv_ret);
+				av_frame_unref(frame);
+				goto fail;
+			}
+
+			/*
+			 * OBS expects interleaved float audio. Use swresample to convert
+			 * from whatever the decoder outputs (commonly float planar for Opus,
+			 * or float/s16 for AAC) to interleaved float stereo at the decoder's
+			 * sample rate.
+			 */
+			if (!swr_ctx) {
+				AVChannelLayout out_layout;
+				AVChannelLayout in_layout;
+
+				memset(&out_layout, 0, sizeof(out_layout));
+				memset(&in_layout, 0, sizeof(in_layout));
+				av_channel_layout_default(&out_layout, 2);
+
+				if (frame->ch_layout.nb_channels > 0) {
+					av_channel_layout_copy(&in_layout, &frame->ch_layout);
+				} else {
+					av_channel_layout_default(&in_layout, 2);
+				}
+
+				swr_alloc_set_opts2(&swr_ctx,
+						    &out_layout, AV_SAMPLE_FMT_FLT, frame->sample_rate,
+						    &in_layout, frame->format, frame->sample_rate,
+						    0, NULL);
+				av_channel_layout_uninit(&out_layout);
+				av_channel_layout_uninit(&in_layout);
+				if (!swr_ctx || swr_init(swr_ctx) < 0) {
+					obs_log(LOG_ERROR, "scrcpy audio: failed to init swresample context");
+					av_frame_unref(frame);
+					goto fail;
+				}
+				obs_log(LOG_INFO, "scrcpy audio swresample initialized: fmt=%d->FLT, rate=%d, ch=%d",
+					frame->format, frame->sample_rate, frame->ch_layout.nb_channels);
+			}
+
+			int out_samples = swr_get_out_samples(swr_ctx, frame->nb_samples);
+			int needed_size = out_samples * 2 * sizeof(float); /* stereo float */
+			if (needed_size > resample_buf_size) {
+				av_free(resample_buf);
+				resample_buf = av_malloc(needed_size);
+				resample_buf_size = needed_size;
+				if (!resample_buf) {
+					obs_log(LOG_ERROR, "scrcpy audio: failed to allocate resample buffer");
+					av_frame_unref(frame);
+					goto fail;
+				}
+			}
+
+			uint8_t *out_buf = resample_buf;
+			int converted = swr_convert(swr_ctx, &out_buf, out_samples,
+						    (const uint8_t **)frame->data, frame->nb_samples);
+			if (converted > 0) {
+				struct obs_source_audio obs_audio;
+				memset(&obs_audio, 0, sizeof(obs_audio));
+				obs_audio.data[0] = resample_buf;
+				obs_audio.frames = (uint32_t)converted;
+				obs_audio.speakers = SPEAKERS_STEREO;
+				obs_audio.format = AUDIO_FORMAT_FLOAT;
+				obs_audio.samples_per_sec = frame->sample_rate;
+				uint64_t now = os_gettime_ns();
+				if (session->next_audio_ts == 0 || now > session->next_audio_ts + 100000000ULL || now < session->next_audio_ts - 100000000ULL)
+					session->next_audio_ts = now;
+
+				obs_audio.timestamp = session->next_audio_ts;
+				session->next_audio_ts += (uint64_t)obs_audio.frames * 1000000000ULL / obs_audio.samples_per_sec;
+
+				if (session->on_audio)
+					session->on_audio(session->on_audio_opaque, &obs_audio);
+			}
+
+			av_frame_unref(frame);
+		}
+	}
+
+	obs_log(LOG_DEBUG, "scrcpy audio decode loop exiting");
+	av_free(resample_buf);
+	if (swr_ctx)
+		swr_free(&swr_ctx);
+	av_packet_unref(packet);
+	if (frame) av_frame_unref(frame);
+	av_packet_free(&packet);
+	av_frame_free(&frame);
+	return true;
+
+fail:
+	av_free(resample_buf);
+	if (swr_ctx)
+		swr_free(&swr_ctx);
+	av_packet_unref(packet);
+	if (frame) av_frame_unref(frame);
+	av_packet_free(&packet);
+	av_frame_free(&frame);
+	return false;
+}
+
+static unsigned __stdcall scrcpy_audio_worker(void *opaque)
+{
+	struct scrcpy_session *session = opaque;
+	enum AVCodecID audio_codec_id = AV_CODEC_ID_NONE;
+	AVCodecContext *audio_decoder = NULL;
+	bool is_raw_pcm = false;
+
+	if (!session || session->audio_socket == INVALID_SOCKET)
+		return 0;
+
+	if (!scrcpy_read_audio_handshake(session, &audio_codec_id)) {
+		obs_log(LOG_ERROR, "scrcpy audio handshake failed");
+		return 0;
+	}
+
+	is_raw_pcm = (audio_codec_id == AV_CODEC_ID_NONE);
+
+	if (!is_raw_pcm) {
+		const AVCodec *codec = avcodec_find_decoder(audio_codec_id);
+		if (!codec) {
+			obs_log(LOG_ERROR, "ffmpeg audio decoder not found for codec id %d", (int)audio_codec_id);
+			return 0;
+		}
+
+		audio_decoder = avcodec_alloc_context3(codec);
+		if (!audio_decoder) {
+			obs_log(LOG_ERROR, "failed to allocate audio decoder context");
+			return 0;
+		}
+
+		audio_decoder->thread_count = 1;
+
+		if (avcodec_open2(audio_decoder, codec, NULL) < 0) {
+			obs_log(LOG_ERROR, "failed to open audio decoder");
+			avcodec_free_context(&audio_decoder);
+			return 0;
+		}
+		obs_log(LOG_INFO, "scrcpy audio decoder initialized");
+	}
+
+	scrcpy_audio_decode_loop(session, audio_decoder, is_raw_pcm);
+
+	if (audio_decoder)
+		avcodec_free_context(&audio_decoder);
+
+	obs_log(LOG_INFO, "scrcpy audio worker finished");
+	return 0;
+}
+
 static unsigned __stdcall scrcpy_session_worker(void *opaque)
 {
 	struct scrcpy_session *session = opaque;
@@ -941,7 +1294,9 @@ static unsigned __stdcall scrcpy_session_worker(void *opaque)
 
 	while (!scrcpy_should_stop(session)) {
 		session->video_socket = INVALID_SOCKET;
+		session->audio_socket = INVALID_SOCKET;
 		session->server_process = NULL;
+		session->next_audio_ts = 0;
 		codec_id = AV_CODEC_ID_NONE;
 		decoder_context = NULL;
 		width = 0;
@@ -965,9 +1320,10 @@ static unsigned __stdcall scrcpy_session_worker(void *opaque)
 
 	_snprintf_s(command, sizeof(command), _TRUNCATE,
 		    "\"%s\" -s %s shell CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / "
-		    "com.genymobile.scrcpy.Server %s scid=%08x tunnel_forward=true audio=false control=false "
+		    "com.genymobile.scrcpy.Server %s scid=%08x tunnel_forward=true audio=%s control=false "
 		    "video_codec=%s",
 		    session->adb_path, session->device_serial, session->scrcpy_version, session->scid,
+		    session->audio_enabled ? "true" : "false",
 		    session->video_codec);
 
 	{
@@ -1000,6 +1356,14 @@ static unsigned __stdcall scrcpy_session_worker(void *opaque)
 			if (has_camera_size) {
 				len += _snprintf_s(command + len, sizeof(command) - len, _TRUNCATE,
 						   " camera_size=%s", session->camera_size);
+			}
+		}
+		if (session->audio_enabled) {
+			len += _snprintf_s(command + len, sizeof(command) - len, _TRUNCATE,
+					   " audio_source=%s audio_codec=%s", session->audio_source, session->audio_codec);
+			if (session->audio_bit_rate != 128000) {
+				len += _snprintf_s(command + len, sizeof(command) - len, _TRUNCATE,
+						   " audio_bit_rate=%u", session->audio_bit_rate);
 			}
 		}
 	}
@@ -1035,13 +1399,31 @@ static unsigned __stdcall scrcpy_session_worker(void *opaque)
 			if (!scrcpy_open_video_socket(session))
 				goto cleanup_winsock;
 
+			/*
+			 * scrcpy server accepts all sockets (video, then audio, then control)
+			 * BEFORE sending the dummy byte and handshake on the video socket.
+			 * We must connect the audio socket here, otherwise the server will
+			 * block in accept() and our read_handshake will deadlock.
+			 */
+			if (session->audio_enabled && session->on_audio) {
+				if (!scrcpy_open_audio_socket(session)) {
+					if (session->video_socket != INVALID_SOCKET) {
+						shutdown(session->video_socket, SD_BOTH);
+						closesocket(session->video_socket);
+						session->video_socket = INVALID_SOCKET;
+					}
+					Sleep(500);
+					continue;
+				}
+			}
+
 			if (scrcpy_read_handshake(session, &codec_id, &width, &height)) {
 				handshake_ok = true;
 				reconnect_attempts = 0;
 				break;
 			}
 
-			/* Handshake failed - server probably not ready. Close socket and retry. */
+			/* Handshake failed - server probably not ready. Close sockets and retry. */
 			obs_log(LOG_DEBUG,
 				"scrcpy handshake attempt %d/%d failed, retrying in 500ms",
 				connect_attempt + 1, max_attempts);
@@ -1049,6 +1431,11 @@ static unsigned __stdcall scrcpy_session_worker(void *opaque)
 				shutdown(session->video_socket, SD_BOTH);
 				closesocket(session->video_socket);
 				session->video_socket = INVALID_SOCKET;
+			}
+			if (session->audio_socket != INVALID_SOCKET) {
+				shutdown(session->audio_socket, SD_BOTH);
+				closesocket(session->audio_socket);
+				session->audio_socket = INVALID_SOCKET;
 			}
 			Sleep(500);
 		}
@@ -1061,6 +1448,22 @@ static unsigned __stdcall scrcpy_session_worker(void *opaque)
 	if (!scrcpy_init_decoder(session, codec_id, &decoder_context))
 		goto cleanup_winsock;
 
+	/*
+	 * Audio socket is already connected. Start the audio worker on a separate thread
+	 * so video and audio decode loops run concurrently.
+	 */
+	if (session->audio_enabled && session->on_audio) {
+		if (session->audio_socket != INVALID_SOCKET) {
+			uintptr_t audio_handle = _beginthreadex(NULL, 0, scrcpy_audio_worker, session, 0, NULL);
+			if (audio_handle) {
+				session->audio_thread = (HANDLE)audio_handle;
+				obs_log(LOG_INFO, "scrcpy audio worker thread started");
+			} else {
+				obs_log(LOG_WARNING, "failed to start audio worker thread");
+			}
+		}
+	}
+
 	if (!scrcpy_decode_loop(session, decoder_context, width, height))
 		obs_log(LOG_WARNING, "scrcpy decode loop exited due to stream error or decode failure");
 
@@ -1070,6 +1473,13 @@ static unsigned __stdcall scrcpy_session_worker(void *opaque)
 cleanup_winsock:
 		if (decoder_context)
 			avcodec_free_context(&decoder_context);
+
+		/* Wait for audio thread to finish before closing handles */
+		if (session->audio_thread) {
+			WaitForSingleObject(session->audio_thread, 5000);
+			CloseHandle(session->audio_thread);
+			session->audio_thread = NULL;
+		}
 
 		scrcpy_close_stream_handles(session);
 

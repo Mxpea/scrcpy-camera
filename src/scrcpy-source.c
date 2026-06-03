@@ -39,6 +39,10 @@
 #define SETTING_CAMERA_ID "camera_id"
 #define SETTING_CAMERA_SIZE "camera_size"
 #define SETTING_HW_DECODING "hw_decoding"
+#define SETTING_AUDIO_ENABLED "audio_enabled"
+#define SETTING_AUDIO_SOURCE "audio_source"
+#define SETTING_AUDIO_CODEC "audio_codec"
+#define SETTING_AUDIO_BIT_RATE "audio_bit_rate"
 
 #ifdef _WIN32
 static const char *const DEFAULT_ADB_PATH = "adb.exe";
@@ -60,12 +64,16 @@ struct scrcpy_source {
 	char *video_source;
 	char *camera_id;
 	char *camera_size;
+	char *audio_source;
+	char *audio_codec;
 	uint16_t local_port;
 	uint32_t video_bit_rate;
+	uint32_t audio_bit_rate;
 	uint16_t max_size;
 	uint32_t frame_width;
 	uint32_t frame_height;
 	bool hw_decoding;
+	bool audio_enabled;
 	bool active;
 };
 
@@ -75,6 +83,7 @@ static bool scrcpy_refresh_button_clicked(obs_properties_t *props, obs_property_
 static void scrcpy_source_start_session(struct scrcpy_source *context);
 static void scrcpy_source_stop_session(struct scrcpy_source *context);
 static void scrcpy_source_on_frame(void *opaque, const struct obs_source_frame *frame);
+static void scrcpy_source_on_audio(void *opaque, const struct obs_source_audio *audio);
 
 static uint32_t scrcpy_source_get_width(void *data)
 {
@@ -125,6 +134,8 @@ static void scrcpy_source_destroy(void *data)
 	bfree(context->video_source);
 	bfree(context->camera_id);
 	bfree(context->camera_size);
+	bfree(context->audio_source);
+	bfree(context->audio_codec);
 	scrcpy_session_destroy(context->session);
 	bfree(context);
 }
@@ -143,10 +154,14 @@ static void scrcpy_source_update(void *data, obs_data_t *settings)
 	const char *video_source = obs_data_get_string(settings, SETTING_VIDEO_SOURCE);
 	const char *camera_id = obs_data_get_string(settings, SETTING_CAMERA_ID);
 	const char *camera_size = obs_data_get_string(settings, SETTING_CAMERA_SIZE);
+	const char *audio_source = obs_data_get_string(settings, SETTING_AUDIO_SOURCE);
+	const char *audio_codec = obs_data_get_string(settings, SETTING_AUDIO_CODEC);
 	long long local_port = obs_data_get_int(settings, SETTING_LOCAL_PORT);
 	long long video_bit_rate = obs_data_get_int(settings, SETTING_VIDEO_BIT_RATE);
+	long long audio_bit_rate = obs_data_get_int(settings, SETTING_AUDIO_BIT_RATE);
 	long long max_size = obs_data_get_int(settings, SETTING_MAX_SIZE);
 	bool hw_decoding = obs_data_get_bool(settings, SETTING_HW_DECODING);
+	bool audio_enabled = obs_data_get_bool(settings, SETTING_AUDIO_ENABLED);
 
 	bfree(context->adb_path);
 	bfree(context->device_serial);
@@ -156,6 +171,7 @@ static void scrcpy_source_update(void *data, obs_data_t *settings)
 	bfree(context->video_source);
 	bfree(context->camera_id);
 	bfree(context->camera_size);
+	bfree(context->audio_codec);
 	context->adb_path = bstrdup(adb_path && adb_path[0] ? adb_path : DEFAULT_ADB_PATH);
 	context->device_serial = bstrdup(device_serial ? device_serial : "");
 	context->server_jar_path = bstrdup(server_jar_path && server_jar_path[0] ? server_jar_path : "scrcpy-server.jar");
@@ -164,6 +180,8 @@ static void scrcpy_source_update(void *data, obs_data_t *settings)
 	context->video_source = bstrdup(video_source && video_source[0] ? video_source : "display");
 	context->camera_id = bstrdup(camera_id && camera_id[0] ? camera_id : "0");
 	context->camera_size = bstrdup(camera_size && camera_size[0] ? camera_size : "1920x1080");
+	context->audio_source = bstrdup(audio_source && audio_source[0] ? audio_source : "output");
+	context->audio_codec = bstrdup(audio_codec && audio_codec[0] ? audio_codec : "opus");
 	
 	/* OBS editable combo box uses the display text. Extract just the ID. */
 	char *space = strchr(context->camera_id, ' ');
@@ -176,13 +194,18 @@ static void scrcpy_source_update(void *data, obs_data_t *settings)
 	if (video_bit_rate < 1)
 		video_bit_rate = 8;
 	context->video_bit_rate = (uint32_t)(video_bit_rate * 1000000);
+	if (audio_bit_rate < 1)
+		audio_bit_rate = 128;
+	context->audio_bit_rate = (uint32_t)(audio_bit_rate * 1000);
 	context->max_size = (uint16_t)max_size;
 	context->hw_decoding = hw_decoding;
+	context->audio_enabled = audio_enabled;
 
 	obs_log(LOG_INFO,
-		"scrcpy source updated: device='%s', source=%s, codec=%s, bitrate=%uMbps, max_size=%hu, camera_size=%s",
+		"scrcpy source updated: device='%s', source=%s, codec=%s, bitrate=%uMbps, max_size=%hu, camera_size=%s, audio=%s(%s)",
 		context->device_serial, context->video_source, context->video_codec, (uint32_t)video_bit_rate,
-		context->max_size, context->camera_size);
+		context->max_size, context->camera_size,
+		context->audio_enabled ? "on" : "off", context->audio_codec);
 
 	if (context->active) {
 		scrcpy_source_stop_session(context);
@@ -204,6 +227,10 @@ static void scrcpy_source_defaults(obs_data_t *settings)
 	obs_data_set_default_string(settings, SETTING_CAMERA_ID, "0");
 	obs_data_set_default_string(settings, SETTING_CAMERA_SIZE, "1920x1080");
 	obs_data_set_default_bool(settings, SETTING_HW_DECODING, true);
+	obs_data_set_default_bool(settings, SETTING_AUDIO_ENABLED, false);
+	obs_data_set_default_string(settings, SETTING_AUDIO_SOURCE, "output");
+	obs_data_set_default_string(settings, SETTING_AUDIO_CODEC, "opus");
+	obs_data_set_default_int(settings, SETTING_AUDIO_BIT_RATE, 128);
 }
 
 static bool scrcpy_video_source_changed(obs_properties_t *props, obs_property_t *p, obs_data_t *settings)
@@ -214,6 +241,18 @@ static bool scrcpy_video_source_changed(obs_properties_t *props, obs_property_t 
 	obs_property_set_visible(cam_id_prop, is_camera);
 	obs_property_t *cam_size_prop = obs_properties_get(props, SETTING_CAMERA_SIZE);
 	obs_property_set_visible(cam_size_prop, is_camera);
+	return true;
+}
+
+static bool scrcpy_audio_enabled_changed(obs_properties_t *props, obs_property_t *p, obs_data_t *settings)
+{
+	bool enabled = obs_data_get_bool(settings, SETTING_AUDIO_ENABLED);
+	obs_property_t *source_prop = obs_properties_get(props, SETTING_AUDIO_SOURCE);
+	obs_property_set_visible(source_prop, enabled);
+	obs_property_t *codec_prop = obs_properties_get(props, SETTING_AUDIO_CODEC);
+	obs_property_set_visible(codec_prop, enabled);
+	obs_property_t *bitrate_prop = obs_properties_get(props, SETTING_AUDIO_BIT_RATE);
+	obs_property_set_visible(bitrate_prop, enabled);
 	return true;
 }
 
@@ -273,6 +312,25 @@ static obs_properties_t *scrcpy_source_properties(void *unused)
 
 	obs_properties_add_int(props, SETTING_LOCAL_PORT, "Local TCP port", 1, 65535, 1);
 
+	/* Audio settings */
+	obs_property_t *audio_enable = obs_properties_add_bool(props, SETTING_AUDIO_ENABLED,
+								"Enable Audio (Android 11+)");
+	obs_property_set_modified_callback(audio_enable, scrcpy_audio_enabled_changed);
+
+	obs_property_t *audio_source_list = obs_properties_add_list(props, SETTING_AUDIO_SOURCE, "Audio Source",
+								   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(audio_source_list, "Internal Audio (Output)", "output");
+	obs_property_list_add_string(audio_source_list, "Microphone (Mic)", "mic");
+
+	obs_property_t *audio_codec_list = obs_properties_add_list(props, SETTING_AUDIO_CODEC, "Audio codec",
+								   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(audio_codec_list, "Opus", "opus");
+	obs_property_list_add_string(audio_codec_list, "AAC", "aac");
+	obs_property_list_add_string(audio_codec_list, "FLAC", "flac");
+	obs_property_list_add_string(audio_codec_list, "Raw (PCM)", "raw");
+
+	obs_properties_add_int_slider(props, SETTING_AUDIO_BIT_RATE, "Audio bitrate (kbps)", 32, 320, 8);
+
 	return props;
 }
 
@@ -295,8 +353,14 @@ static void scrcpy_source_start_session(struct scrcpy_source *context)
 	config.video_bit_rate = context->video_bit_rate;
 	config.max_size = context->max_size;
 	config.hw_decoding = context->hw_decoding;
+	config.audio_enabled = context->audio_enabled;
+	config.audio_source = context->audio_source;
+	config.audio_codec = context->audio_codec;
+	config.audio_bit_rate = context->audio_bit_rate;
 	config.on_frame = scrcpy_source_on_frame;
 	config.on_frame_opaque = context;
+	config.on_audio = scrcpy_source_on_audio;
+	config.on_audio_opaque = context;
 
 	if (scrcpy_session_start(context->session, &config) != 0)
 		obs_log(LOG_WARNING, "unable to start scrcpy bootstrap session");
@@ -319,6 +383,15 @@ static void scrcpy_source_on_frame(void *opaque, const struct obs_source_frame *
 	context->frame_width = frame->width;
 	context->frame_height = frame->height;
 	obs_source_output_video(context->source, frame);
+}
+
+static void scrcpy_source_on_audio(void *opaque, const struct obs_source_audio *audio)
+{
+	struct scrcpy_source *context = opaque;
+	if (!context || !audio)
+		return;
+
+	obs_source_output_audio(context->source, audio);
 }
 
 static void scrcpy_source_activate(void *data)
@@ -438,7 +511,7 @@ static bool scrcpy_refresh_button_clicked(obs_properties_t *props, obs_property_
 static struct obs_source_info scrcpy_source_info = {
 	.id = "scrcpy_camera_source",
 	.type = OBS_SOURCE_TYPE_INPUT,
-	.output_flags = OBS_SOURCE_ASYNC_VIDEO,
+	.output_flags = OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_AUDIO,
 	.get_name = scrcpy_source_get_name,
 	.create = scrcpy_source_create,
 	.destroy = scrcpy_source_destroy,
