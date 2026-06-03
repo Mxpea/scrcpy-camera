@@ -174,15 +174,17 @@ static void scrcpy_source_update(void *data, obs_data_t *settings)
 	bfree(context->audio_codec);
 	context->adb_path = bstrdup(adb_path && adb_path[0] ? adb_path : DEFAULT_ADB_PATH);
 	context->device_serial = bstrdup(device_serial ? device_serial : "");
-	context->server_jar_path = bstrdup(server_jar_path && server_jar_path[0] ? server_jar_path : "scrcpy-server.jar");
-	context->scrcpy_version = bstrdup(scrcpy_version && scrcpy_version[0] ? scrcpy_version : DEFAULT_SCRCPY_VERSION);
+	context->server_jar_path =
+		bstrdup(server_jar_path && server_jar_path[0] ? server_jar_path : "scrcpy-server.jar");
+	context->scrcpy_version =
+		bstrdup(scrcpy_version && scrcpy_version[0] ? scrcpy_version : DEFAULT_SCRCPY_VERSION);
 	context->video_codec = bstrdup(video_codec && video_codec[0] ? video_codec : "h264");
 	context->video_source = bstrdup(video_source && video_source[0] ? video_source : "display");
 	context->camera_id = bstrdup(camera_id && camera_id[0] ? camera_id : "0");
 	context->camera_size = bstrdup(camera_size && camera_size[0] ? camera_size : "1920x1080");
 	context->audio_source = bstrdup(audio_source && audio_source[0] ? audio_source : "output");
 	context->audio_codec = bstrdup(audio_codec && audio_codec[0] ? audio_codec : "opus");
-	
+
 	/* OBS editable combo box uses the display text. Extract just the ID. */
 	char *space = strchr(context->camera_id, ' ');
 	if (space)
@@ -204,8 +206,7 @@ static void scrcpy_source_update(void *data, obs_data_t *settings)
 	obs_log(LOG_INFO,
 		"scrcpy source updated: device='%s', source=%s, codec=%s, bitrate=%uMbps, max_size=%hu, camera_size=%s, audio=%s(%s)",
 		context->device_serial, context->video_source, context->video_codec, (uint32_t)video_bit_rate,
-		context->max_size, context->camera_size,
-		context->audio_enabled ? "on" : "off", context->audio_codec);
+		context->max_size, context->camera_size, context->audio_enabled ? "on" : "off", context->audio_codec);
 
 	if (context->active) {
 		scrcpy_source_stop_session(context);
@@ -268,22 +269,23 @@ static obs_properties_t *scrcpy_source_properties(void *unused)
 	obs_properties_add_path(props, SETTING_ADB_PATH, "ADB executable", OBS_PATH_FILE, ADB_FILTER, NULL);
 
 	obs_property_t *device_list = obs_properties_add_list(props, SETTING_DEVICE_SERIAL, "ADB device",
-					       OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+							      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 	if (device_list)
 		scrcpy_refresh_device_list(context, device_list);
 
 	obs_properties_add_button(props, "refresh_devices", "Refresh device list", scrcpy_refresh_button_clicked);
-	obs_properties_add_path(props, SETTING_SERVER_JAR_PATH, "scrcpy-server.jar path", OBS_PATH_FILE, "Jar Files (*.jar);;All Files (*.*)", NULL);
+	obs_properties_add_path(props, SETTING_SERVER_JAR_PATH, "scrcpy-server.jar path", OBS_PATH_FILE,
+				"Jar Files (*.jar);;All Files (*.*)", NULL);
 	obs_properties_add_text(props, SETTING_SCRCPY_VERSION, "scrcpy protocol version", OBS_TEXT_DEFAULT);
 
-	vsource_list = obs_properties_add_list(props, SETTING_VIDEO_SOURCE, "Video source",
-					       OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	vsource_list = obs_properties_add_list(props, SETTING_VIDEO_SOURCE, "Video source", OBS_COMBO_TYPE_LIST,
+					       OBS_COMBO_FORMAT_STRING);
 	obs_property_list_add_string(vsource_list, "Screen", "display");
 	obs_property_list_add_string(vsource_list, "Camera", "camera");
 	obs_property_set_modified_callback(vsource_list, scrcpy_video_source_changed);
 
-	cam_id_prop = obs_properties_add_list(props, SETTING_CAMERA_ID, "Camera ID",
-					      OBS_COMBO_TYPE_EDITABLE, OBS_COMBO_FORMAT_STRING);
+	cam_id_prop = obs_properties_add_list(props, SETTING_CAMERA_ID, "Camera ID", OBS_COMBO_TYPE_EDITABLE,
+					      OBS_COMBO_FORMAT_STRING);
 	obs_property_list_add_string(cam_id_prop, "0 (Back)", "0");
 	obs_property_list_add_string(cam_id_prop, "1 (Front)", "1");
 	obs_property_list_add_string(cam_id_prop, "2", "2");
@@ -291,8 +293,8 @@ static obs_properties_t *scrcpy_source_properties(void *unused)
 
 	obs_properties_add_text(props, SETTING_CAMERA_SIZE, "Camera Size", OBS_TEXT_DEFAULT);
 
-	codec_list = obs_properties_add_list(props, SETTING_VIDEO_CODEC, "Video codec",
-					     OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	codec_list = obs_properties_add_list(props, SETTING_VIDEO_CODEC, "Video codec", OBS_COMBO_TYPE_LIST,
+					     OBS_COMBO_FORMAT_STRING);
 	obs_property_list_add_string(codec_list, "H.264 (AVC)", "h264");
 	obs_property_list_add_string(codec_list, "H.265 (HEVC)", "h265");
 
@@ -300,8 +302,8 @@ static obs_properties_t *scrcpy_source_properties(void *unused)
 
 	obs_properties_add_int_slider(props, SETTING_VIDEO_BIT_RATE, "Video bitrate (Mbps)", 1, 50, 1);
 
-	max_size_list = obs_properties_add_list(props, SETTING_MAX_SIZE, "Max resolution",
-						OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	max_size_list = obs_properties_add_list(props, SETTING_MAX_SIZE, "Max resolution", OBS_COMBO_TYPE_LIST,
+						OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(max_size_list, "Original (no limit)", 0);
 	obs_property_list_add_int(max_size_list, "2560p (WQHD)", 2560);
 	obs_property_list_add_int(max_size_list, "1920p (Full HD)", 1920);
@@ -313,12 +315,12 @@ static obs_properties_t *scrcpy_source_properties(void *unused)
 	obs_properties_add_int(props, SETTING_LOCAL_PORT, "Local TCP port", 1, 65535, 1);
 
 	/* Audio settings */
-	obs_property_t *audio_enable = obs_properties_add_bool(props, SETTING_AUDIO_ENABLED,
-								"Enable Audio (Android 11+)");
+	obs_property_t *audio_enable =
+		obs_properties_add_bool(props, SETTING_AUDIO_ENABLED, "Enable Audio (Android 11+)");
 	obs_property_set_modified_callback(audio_enable, scrcpy_audio_enabled_changed);
 
 	obs_property_t *audio_source_list = obs_properties_add_list(props, SETTING_AUDIO_SOURCE, "Audio Source",
-								   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+								    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 	obs_property_list_add_string(audio_source_list, "Internal Audio (Output)", "output");
 	obs_property_list_add_string(audio_source_list, "Microphone (Mic)", "mic");
 

@@ -99,7 +99,8 @@ static bool scrcpy_read_handshake(struct scrcpy_session *session, enum AVCodecID
 				  uint32_t *height);
 static bool scrcpy_read_audio_handshake(struct scrcpy_session *session, enum AVCodecID *codec_id);
 static uint32_t scrcpy_read_be32(const uint8_t *data);
-static bool scrcpy_init_decoder(struct scrcpy_session *session, enum AVCodecID codec_id, AVCodecContext **decoder_context);
+static bool scrcpy_init_decoder(struct scrcpy_session *session, enum AVCodecID codec_id,
+				AVCodecContext **decoder_context);
 static bool scrcpy_decode_loop(struct scrcpy_session *session, AVCodecContext *decoder_context, uint32_t width,
 			       uint32_t height);
 static bool scrcpy_audio_decode_loop(struct scrcpy_session *session, AVCodecContext *decoder_context, bool is_raw_pcm);
@@ -124,20 +125,17 @@ static void scrcpy_copy_config(struct scrcpy_session *session, const struct scrc
 	session->adb_path = bstrdup(config->adb_path ? config->adb_path : "adb.exe");
 	session->device_serial = bstrdup(config->device_serial ? config->device_serial : "");
 	session->server_jar_path = bstrdup(config->server_jar_path ? config->server_jar_path : "scrcpy-server.jar");
-	session->scrcpy_version =
-		bstrdup(config->scrcpy_version && config->scrcpy_version[0] ? config->scrcpy_version : DEFAULT_SCRCPY_VERSION);
-	session->video_codec =
-		bstrdup(config->video_codec && config->video_codec[0] ? config->video_codec : "h264");
+	session->scrcpy_version = bstrdup(config->scrcpy_version && config->scrcpy_version[0] ? config->scrcpy_version
+											      : DEFAULT_SCRCPY_VERSION);
+	session->video_codec = bstrdup(config->video_codec && config->video_codec[0] ? config->video_codec : "h264");
 	session->video_source =
 		bstrdup(config->video_source && config->video_source[0] ? config->video_source : "display");
-	session->camera_id =
-		bstrdup(config->camera_id && config->camera_id[0] ? config->camera_id : "0");
+	session->camera_id = bstrdup(config->camera_id && config->camera_id[0] ? config->camera_id : "0");
 	session->camera_size =
 		bstrdup(config->camera_size && config->camera_size[0] ? config->camera_size : "1920x1080");
 	session->audio_source =
 		bstrdup(config->audio_source && config->audio_source[0] ? config->audio_source : "output");
-	session->audio_codec =
-		bstrdup(config->audio_codec && config->audio_codec[0] ? config->audio_codec : "opus");
+	session->audio_codec = bstrdup(config->audio_codec && config->audio_codec[0] ? config->audio_codec : "opus");
 	session->local_port = config->local_port ? config->local_port : SCRCPY_DEFAULT_PORT;
 	session->video_bit_rate = config->video_bit_rate ? config->video_bit_rate : 8000000;
 	session->audio_bit_rate = config->audio_bit_rate ? config->audio_bit_rate : 128000;
@@ -307,22 +305,26 @@ static bool scrcpy_run_process(struct scrcpy_session *session, const char *step,
 		security_attributes.lpSecurityDescriptor = NULL;
 
 		if (!CreatePipe(&stdout_read, &stdout_write, &security_attributes, 0)) {
-			obs_log(LOG_ERROR, "failed to create stdout pipe for step '%s' (error %lu)", step, GetLastError());
+			obs_log(LOG_ERROR, "failed to create stdout pipe for step '%s' (error %lu)", step,
+				GetLastError());
 			return false;
 		}
 
 		if (!SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0)) {
-			obs_log(LOG_ERROR, "failed to configure stdout pipe for step '%s' (error %lu)", step, GetLastError());
+			obs_log(LOG_ERROR, "failed to configure stdout pipe for step '%s' (error %lu)", step,
+				GetLastError());
 			goto done;
 		}
 
 		if (!CreatePipe(&stderr_read, &stderr_write, &security_attributes, 0)) {
-			obs_log(LOG_ERROR, "failed to create stderr pipe for step '%s' (error %lu)", step, GetLastError());
+			obs_log(LOG_ERROR, "failed to create stderr pipe for step '%s' (error %lu)", step,
+				GetLastError());
 			goto done;
 		}
 
 		if (!SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0)) {
-			obs_log(LOG_ERROR, "failed to configure stderr pipe for step '%s' (error %lu)", step, GetLastError());
+			obs_log(LOG_ERROR, "failed to configure stderr pipe for step '%s' (error %lu)", step,
+				GetLastError());
 			goto done;
 		}
 
@@ -356,18 +358,22 @@ static bool scrcpy_run_process(struct scrcpy_session *session, const char *step,
 			DWORD wait_result = WaitForSingleObject(process_info.hProcess, 100);
 			DWORD bytes_available = 0;
 
-			if (stdout_read && PeekNamedPipe(stdout_read, NULL, 0, NULL, &bytes_available, NULL) && bytes_available > 0) {
+			if (stdout_read && PeekNamedPipe(stdout_read, NULL, 0, NULL, &bytes_available, NULL) &&
+			    bytes_available > 0) {
 				DWORD bytes_read = 0;
-				if (ReadFile(stdout_read, buffer, sizeof(buffer) - 1, &bytes_read, NULL) && bytes_read > 0) {
+				if (ReadFile(stdout_read, buffer, sizeof(buffer) - 1, &bytes_read, NULL) &&
+				    bytes_read > 0) {
 					buffer[bytes_read] = '\0';
 					obs_log(LOG_INFO, "scrcpy adb: %s", buffer);
 				}
 			}
 
 			bytes_available = 0;
-			if (stderr_read && PeekNamedPipe(stderr_read, NULL, 0, NULL, &bytes_available, NULL) && bytes_available > 0) {
+			if (stderr_read && PeekNamedPipe(stderr_read, NULL, 0, NULL, &bytes_available, NULL) &&
+			    bytes_available > 0) {
 				DWORD bytes_read = 0;
-				if (ReadFile(stderr_read, buffer, sizeof(buffer) - 1, &bytes_read, NULL) && bytes_read > 0) {
+				if (ReadFile(stderr_read, buffer, sizeof(buffer) - 1, &bytes_read, NULL) &&
+				    bytes_read > 0) {
 					buffer[bytes_read] = '\0';
 					obs_log(LOG_INFO, "scrcpy adb: %s", buffer);
 				}
@@ -383,14 +389,16 @@ static bool scrcpy_run_process(struct scrcpy_session *session, const char *step,
 			}
 
 			if (os_gettime_ns() > deadline_ns) {
-				obs_log(LOG_WARNING, "scrcpy command timed out after %u ms: %s", SCRCPY_COMMAND_TIMEOUT_MS, step);
+				obs_log(LOG_WARNING, "scrcpy command timed out after %u ms: %s",
+					SCRCPY_COMMAND_TIMEOUT_MS, step);
 				TerminateProcess(process_info.hProcess, 1);
 				break;
 			}
 		}
 
 		if (!GetExitCodeProcess(process_info.hProcess, &process_exit_code)) {
-			obs_log(LOG_WARNING, "failed to read exit code for step '%s' (error %lu)", step, GetLastError());
+			obs_log(LOG_WARNING, "failed to read exit code for step '%s' (error %lu)", step,
+				GetLastError());
 			process_exit_code = 1;
 		}
 
@@ -493,7 +501,7 @@ static bool scrcpy_read_exact(struct scrcpy_session *session, SOCKET sock, void 
 	uint8_t *cursor = buffer;
 	size_t remaining = size;
 
-			// obs_log(LOG_INFO, "[DEBUG] scrcpy_read_exact requesting %zu bytes", size);
+	// obs_log(LOG_INFO, "[DEBUG] scrcpy_read_exact requesting %zu bytes", size);
 
 	while (remaining > 0) {
 		int received;
@@ -521,19 +529,18 @@ static bool scrcpy_read_exact(struct scrcpy_session *session, SOCKET sock, void 
 			continue;
 		}
 
-			// obs_log(LOG_INFO, "[DEBUG] scrcpy recv failed: received=%d remaining=%zu error=%d", received, remaining, last_error);
+		// obs_log(LOG_INFO, "[DEBUG] scrcpy recv failed: received=%d remaining=%zu error=%d", received, remaining, last_error);
 
 		return false;
 	}
 
-			// obs_log(LOG_INFO, "[DEBUG] scrcpy_read_exact successfully read %zu bytes", size);
+	// obs_log(LOG_INFO, "[DEBUG] scrcpy_read_exact successfully read %zu bytes", size);
 	return true;
 }
 
 static uint32_t scrcpy_read_be32(const uint8_t *data)
 {
-	return ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) | ((uint32_t)data[2] << 8) |
-	       (uint32_t)data[3];
+	return ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) | ((uint32_t)data[2] << 8) | (uint32_t)data[3];
 }
 
 static bool scrcpy_read_handshake(struct scrcpy_session *session, enum AVCodecID *codec_id, uint32_t *width,
@@ -549,16 +556,16 @@ static bool scrcpy_read_handshake(struct scrcpy_session *session, enum AVCodecID
 	 * Protocol lock: this parser intentionally targets scrcpy-server 4.0 behavior
 	 * over adb forward with video enabled and audio/control disabled.
 	 */
-			// obs_log(LOG_INFO, "[DEBUG] waiting for scrcpy forward dummy byte");
+	// obs_log(LOG_INFO, "[DEBUG] waiting for scrcpy forward dummy byte");
 	scrcpy_log_socket_available("before dummy byte", session->video_socket);
 	if (!scrcpy_read_exact(session, session->video_socket, &dummy, sizeof(dummy))) {
 		scrcpy_log_socket_available("dummy byte read failed", session->video_socket);
-			// obs_log(LOG_INFO, "[DEBUG] failed to read scrcpy forward dummy byte (will retry)");
+		// obs_log(LOG_INFO, "[DEBUG] failed to read scrcpy forward dummy byte (will retry)");
 		return false;
 	}
-			// obs_log(LOG_INFO, "[DEBUG] scrcpy forward dummy byte value: %u", dummy);
+	// obs_log(LOG_INFO, "[DEBUG] scrcpy forward dummy byte value: %u", dummy);
 
-			// obs_log(LOG_INFO, "[DEBUG] waiting for scrcpy 64-byte device metadata");
+	// obs_log(LOG_INFO, "[DEBUG] waiting for scrcpy 64-byte device metadata");
 	if (!scrcpy_read_exact(session, session->video_socket, device_name, SCRCPY_META_DEVICE_NAME_SIZE)) {
 		scrcpy_log_socket_available("device metadata read failed", session->video_socket);
 		obs_log(LOG_ERROR, "failed to read scrcpy device metadata");
@@ -604,22 +611,18 @@ static bool scrcpy_read_handshake(struct scrcpy_session *session, enum AVCodecID
 		*width = 0;
 		*height = 0;
 	} else {
-		if (!scrcpy_read_exact(session, session->video_socket,
-				       session_packet, sizeof(session_packet))) {
-			scrcpy_log_socket_available("session packet read failed",
-						    session->video_socket);
+		if (!scrcpy_read_exact(session, session->video_socket, session_packet, sizeof(session_packet))) {
+			scrcpy_log_socket_available("session packet read failed", session->video_socket);
 			obs_log(LOG_ERROR, "failed to read scrcpy video session packet");
 			return false;
 		}
 		if ((session_packet[0] & 0x80U) == 0) {
-			obs_log(LOG_ERROR, "expected 0x80 session packet, got 0x%02x",
-				session_packet[0]);
+			obs_log(LOG_ERROR, "expected 0x80 session packet, got 0x%02x", session_packet[0]);
 			return false;
 		}
 		*width = scrcpy_read_be32(session_packet + 4);
 		*height = scrcpy_read_be32(session_packet + 8);
-		obs_log(LOG_INFO, "scrcpy session dimensions: %ux%u",
-			*width, *height);
+		obs_log(LOG_INFO, "scrcpy session dimensions: %ux%u", *width, *height);
 	}
 	return true;
 }
@@ -634,7 +637,7 @@ static enum AVPixelFormat scrcpy_get_hw_format(AVCodecContext *ctx, const enum A
 		if (name) {
 			strncat(fmts_str, name, sizeof(fmts_str) - strlen(fmts_str) - 1);
 			strncat(fmts_str, ", ", sizeof(fmts_str) - strlen(fmts_str) - 1);
-			
+
 			if (session) {
 				if (session->hw_device_type == AV_HWDEVICE_TYPE_D3D11VA) {
 					if (strcmp(name, "d3d11") == 0 || strcmp(name, "d3d11va_vld") == 0) {
@@ -663,13 +666,16 @@ static enum AVPixelFormat scrcpy_get_hw_format(AVCodecContext *ctx, const enum A
 	// We only log this once to avoid spamming
 	static bool warned = false;
 	if (!warned) {
-		obs_log(LOG_WARNING, "failed to get HW surface format, available formats: %s. Hardware decoding will not be used", fmts_str);
+		obs_log(LOG_WARNING,
+			"failed to get HW surface format, available formats: %s. Hardware decoding will not be used",
+			fmts_str);
 		warned = true;
 	}
 	return pix_fmts[0];
 }
 
-static bool scrcpy_init_decoder(struct scrcpy_session *session, enum AVCodecID codec_id, AVCodecContext **decoder_context)
+static bool scrcpy_init_decoder(struct scrcpy_session *session, enum AVCodecID codec_id,
+				AVCodecContext **decoder_context)
 {
 	const AVCodec *codec = avcodec_find_decoder(codec_id);
 	AVCodecContext *context;
@@ -685,19 +691,20 @@ static bool scrcpy_init_decoder(struct scrcpy_session *session, enum AVCodecID c
 	if (session->hw_decoding) {
 		const char *hw_types[] = {"cuda", "qsv", "d3d11va", "dxva2", NULL};
 		enum AVHWDeviceType hw_type = AV_HWDEVICE_TYPE_NONE;
-		
+
 		for (int i = 0; hw_types[i]; i++) {
 			hw_type = av_hwdevice_find_type_by_name(hw_types[i]);
 			if (hw_type != AV_HWDEVICE_TYPE_NONE) {
 				int err = av_hwdevice_ctx_create(&hw_device_ctx, hw_type, NULL, NULL, 0);
 				if (err == 0) {
-					obs_log(LOG_INFO, "hardware decoding context created successfully: %s", hw_types[i]);
+					obs_log(LOG_INFO, "hardware decoding context created successfully: %s",
+						hw_types[i]);
 					session->hw_device_type = hw_type;
 					break;
 				}
 			}
 		}
-		
+
 		if (!hw_device_ctx) {
 			obs_log(LOG_WARNING, "failed to create any hardware device context, falling back to software");
 		}
@@ -706,7 +713,8 @@ static bool scrcpy_init_decoder(struct scrcpy_session *session, enum AVCodecID c
 	context = avcodec_alloc_context3(codec);
 	if (!context) {
 		obs_log(LOG_ERROR, "failed to allocate ffmpeg decoder context");
-		if (hw_device_ctx) av_buffer_unref(&hw_device_ctx);
+		if (hw_device_ctx)
+			av_buffer_unref(&hw_device_ctx);
 		return false;
 	}
 
@@ -725,7 +733,7 @@ static bool scrcpy_init_decoder(struct scrcpy_session *session, enum AVCodecID c
 		return false;
 	}
 
-			// obs_log(LOG_INFO, "[DEBUG] ffmpeg decoder initialized successfully (hw_decoding=%d, threads=%d)", session->hw_decoding, context->thread_count);
+	// obs_log(LOG_INFO, "[DEBUG] ffmpeg decoder initialized successfully (hw_decoding=%d, threads=%d)", session->hw_decoding, context->thread_count);
 
 	*decoder_context = context;
 	return true;
@@ -748,8 +756,6 @@ static bool scrcpy_decode_loop(struct scrcpy_session *session, AVCodecContext *d
 		return false;
 	}
 
-
-
 	obs_log(LOG_INFO, "scrcpy decode loop starting (socket=%lld)", (long long)session->video_socket);
 
 	while (!scrcpy_should_stop(session)) {
@@ -758,14 +764,13 @@ static bool scrcpy_decode_loop(struct scrcpy_session *session, AVCodecContext *d
 		int send_ret;
 		int last_error;
 
-			// obs_log(LOG_INFO, "[DEBUG] scrcpy decode loop: waiting for %zu byte header...", sizeof(header));
+		// obs_log(LOG_INFO, "[DEBUG] scrcpy decode loop: waiting for %zu byte header...", sizeof(header));
 		if (!scrcpy_read_exact(session, session->video_socket, header, sizeof(header))) {
-			obs_log(LOG_WARNING, "scrcpy decode loop: header read failed (WSA=%d)",
-				WSAGetLastError());
+			obs_log(LOG_WARNING, "scrcpy decode loop: header read failed (WSA=%d)", WSAGetLastError());
 			break;
 		}
 
-			// obs_log(LOG_INFO, "[DEBUG] scrcpy decode loop: header read success. Header bytes: %02x %02x %02x %02x ...", header[0], header[1], header[2], header[3]);
+		// obs_log(LOG_INFO, "[DEBUG] scrcpy decode loop: header read success. Header bytes: %02x %02x %02x %02x ...", header[0], header[1], header[2], header[3]);
 
 		is_session_packet = (header[0] & 0x80U) != 0;
 		last_error = WSAGetLastError();
@@ -780,7 +785,7 @@ static bool scrcpy_decode_loop(struct scrcpy_session *session, AVCodecContext *d
 			continue;
 
 		payload_size = scrcpy_read_be32(header + 8);
-			// obs_log(LOG_INFO, "[DEBUG] scrcpy decode loop: packet payload_size=%u bytes (flags=%02x)", payload_size, header[0]);
+		// obs_log(LOG_INFO, "[DEBUG] scrcpy decode loop: packet payload_size=%u bytes (flags=%02x)", payload_size, header[0]);
 		if (payload_size == 0) {
 			// obs_log(LOG_INFO, "[DEBUG] scrcpy packet with empty payload ignored");
 			continue;
@@ -788,17 +793,18 @@ static bool scrcpy_decode_loop(struct scrcpy_session *session, AVCodecContext *d
 
 		av_packet_unref(packet);
 		if (av_new_packet(packet, (int)payload_size) < 0) {
-			obs_log(LOG_ERROR, "scrcpy decode loop: av_new_packet failed for payload_size=%u", payload_size);
+			obs_log(LOG_ERROR, "scrcpy decode loop: av_new_packet failed for payload_size=%u",
+				payload_size);
 			break;
 		}
 
-			// obs_log(LOG_INFO, "[DEBUG] scrcpy decode loop: waiting for %u bytes of payload...", payload_size);
+		// obs_log(LOG_INFO, "[DEBUG] scrcpy decode loop: waiting for %u bytes of payload...", payload_size);
 		if (!scrcpy_read_exact(session, session->video_socket, packet->data, payload_size)) {
 			obs_log(LOG_WARNING, "scrcpy decode loop: failed to read payload (%u bytes)", payload_size);
 			av_packet_unref(packet);
 			break;
 		}
-			// obs_log(LOG_INFO, "[DEBUG] scrcpy decode loop: payload read successfully");
+		// obs_log(LOG_INFO, "[DEBUG] scrcpy decode loop: payload read successfully");
 
 		if ((header[0] & 0x20U) != 0)
 			packet->flags |= AV_PKT_FLAG_KEY;
@@ -856,14 +862,14 @@ static bool scrcpy_decode_loop(struct scrcpy_session *session, AVCodecContext *d
 			codec_config_size = 0;
 		}
 
-			// obs_log(LOG_INFO, "[DEBUG] scrcpy decode loop: sending packet to decoder (size=%d)", packet->size);
+		// obs_log(LOG_INFO, "[DEBUG] scrcpy decode loop: sending packet to decoder (size=%d)", packet->size);
 		send_ret = avcodec_send_packet(decoder_context, packet);
 		av_packet_unref(packet);
 		if (send_ret < 0 && send_ret != AVERROR(EAGAIN)) {
 			obs_log(LOG_ERROR, "scrcpy decode loop: avcodec_send_packet failed (%d)", send_ret);
 			break;
 		}
-			// obs_log(LOG_INFO, "[DEBUG] scrcpy decode loop: sent packet to decoder (ret=%d)", send_ret);
+		// obs_log(LOG_INFO, "[DEBUG] scrcpy decode loop: sent packet to decoder (ret=%d)", send_ret);
 
 		for (;;) {
 			int recv_ret = avcodec_receive_frame(decoder_context, frame);
@@ -872,7 +878,8 @@ static bool scrcpy_decode_loop(struct scrcpy_session *session, AVCodecContext *d
 				break;
 			}
 			if (recv_ret < 0) {
-				obs_log(LOG_ERROR, "[DEBUG] scrcpy decode loop: avcodec_receive_frame failed (%d)", recv_ret);
+				obs_log(LOG_ERROR, "[DEBUG] scrcpy decode loop: avcodec_receive_frame failed (%d)",
+					recv_ret);
 				av_frame_unref(frame);
 				goto fail;
 			}
@@ -897,10 +904,11 @@ static bool scrcpy_decode_loop(struct scrcpy_session *session, AVCodecContext *d
 				output_frame = sw_frame;
 			}
 
-			if ((output_frame->format == AV_PIX_FMT_YUV420P || output_frame->format == AV_PIX_FMT_NV12) && session->on_frame) {
+			if ((output_frame->format == AV_PIX_FMT_YUV420P || output_frame->format == AV_PIX_FMT_NV12) &&
+			    session->on_frame) {
 				struct obs_source_frame obs_frame;
 				memset(&obs_frame, 0, sizeof(obs_frame));
-				
+
 				if (output_frame->format == AV_PIX_FMT_NV12) {
 					obs_frame.format = VIDEO_FORMAT_NV12;
 					obs_frame.data[0] = output_frame->data[0];
@@ -916,16 +924,15 @@ static bool scrcpy_decode_loop(struct scrcpy_session *session, AVCodecContext *d
 					obs_frame.linesize[1] = output_frame->linesize[1];
 					obs_frame.linesize[2] = output_frame->linesize[2];
 				}
-				
+
 				obs_frame.width = output_frame->width;
 				obs_frame.height = output_frame->height;
 				obs_frame.timestamp = os_gettime_ns();
 
-				video_format_get_parameters_for_format(
-					VIDEO_CS_709, VIDEO_RANGE_PARTIAL,
-					obs_frame.format, obs_frame.color_matrix,
-					obs_frame.color_range_min,
-					obs_frame.color_range_max);
+				video_format_get_parameters_for_format(VIDEO_CS_709, VIDEO_RANGE_PARTIAL,
+								       obs_frame.format, obs_frame.color_matrix,
+								       obs_frame.color_range_min,
+								       obs_frame.color_range_max);
 				session->on_frame(session->on_frame_opaque, &obs_frame);
 			} else if (!warned_format && session->on_frame) {
 				obs_log(LOG_WARNING,
@@ -1098,11 +1105,13 @@ static bool scrcpy_audio_decode_loop(struct scrcpy_session *session, AVCodecCont
 			obs_audio.format = AUDIO_FORMAT_16BIT;
 			obs_audio.samples_per_sec = 48000;
 			uint64_t now = os_gettime_ns();
-			if (session->next_audio_ts == 0 || now > session->next_audio_ts + 100000000ULL || now < session->next_audio_ts - 100000000ULL)
+			if (session->next_audio_ts == 0 || now > session->next_audio_ts + 100000000ULL ||
+			    now < session->next_audio_ts - 100000000ULL)
 				session->next_audio_ts = now;
 
 			obs_audio.timestamp = session->next_audio_ts;
-			session->next_audio_ts += (uint64_t)obs_audio.frames * 1000000000ULL / obs_audio.samples_per_sec;
+			session->next_audio_ts +=
+				(uint64_t)obs_audio.frames * 1000000000ULL / obs_audio.samples_per_sec;
 
 			if (session->on_audio)
 				session->on_audio(session->on_audio_opaque, &obs_audio);
@@ -1123,7 +1132,8 @@ static bool scrcpy_audio_decode_loop(struct scrcpy_session *session, AVCodecCont
 			if (recv_ret == AVERROR(EAGAIN) || recv_ret == AVERROR_EOF)
 				break;
 			if (recv_ret < 0) {
-				obs_log(LOG_ERROR, "scrcpy audio decode loop: avcodec_receive_frame failed (%d)", recv_ret);
+				obs_log(LOG_ERROR, "scrcpy audio decode loop: avcodec_receive_frame failed (%d)",
+					recv_ret);
 				av_frame_unref(frame);
 				goto fail;
 			}
@@ -1148,10 +1158,8 @@ static bool scrcpy_audio_decode_loop(struct scrcpy_session *session, AVCodecCont
 					av_channel_layout_default(&in_layout, 2);
 				}
 
-				swr_alloc_set_opts2(&swr_ctx,
-						    &out_layout, AV_SAMPLE_FMT_FLT, frame->sample_rate,
-						    &in_layout, frame->format, frame->sample_rate,
-						    0, NULL);
+				swr_alloc_set_opts2(&swr_ctx, &out_layout, AV_SAMPLE_FMT_FLT, frame->sample_rate,
+						    &in_layout, frame->format, frame->sample_rate, 0, NULL);
 				av_channel_layout_uninit(&out_layout);
 				av_channel_layout_uninit(&in_layout);
 				if (!swr_ctx || swr_init(swr_ctx) < 0) {
@@ -1177,8 +1185,8 @@ static bool scrcpy_audio_decode_loop(struct scrcpy_session *session, AVCodecCont
 			}
 
 			uint8_t *out_buf = resample_buf;
-			int converted = swr_convert(swr_ctx, &out_buf, out_samples,
-						    (const uint8_t **)frame->data, frame->nb_samples);
+			int converted = swr_convert(swr_ctx, &out_buf, out_samples, (const uint8_t **)frame->data,
+						    frame->nb_samples);
 			if (converted > 0) {
 				struct obs_source_audio obs_audio;
 				memset(&obs_audio, 0, sizeof(obs_audio));
@@ -1188,11 +1196,13 @@ static bool scrcpy_audio_decode_loop(struct scrcpy_session *session, AVCodecCont
 				obs_audio.format = AUDIO_FORMAT_FLOAT;
 				obs_audio.samples_per_sec = frame->sample_rate;
 				uint64_t now = os_gettime_ns();
-				if (session->next_audio_ts == 0 || now > session->next_audio_ts + 100000000ULL || now < session->next_audio_ts - 100000000ULL)
+				if (session->next_audio_ts == 0 || now > session->next_audio_ts + 100000000ULL ||
+				    now < session->next_audio_ts - 100000000ULL)
 					session->next_audio_ts = now;
 
 				obs_audio.timestamp = session->next_audio_ts;
-				session->next_audio_ts += (uint64_t)obs_audio.frames * 1000000000ULL / obs_audio.samples_per_sec;
+				session->next_audio_ts +=
+					(uint64_t)obs_audio.frames * 1000000000ULL / obs_audio.samples_per_sec;
 
 				if (session->on_audio)
 					session->on_audio(session->on_audio_opaque, &obs_audio);
@@ -1207,7 +1217,8 @@ static bool scrcpy_audio_decode_loop(struct scrcpy_session *session, AVCodecCont
 	if (swr_ctx)
 		swr_free(&swr_ctx);
 	av_packet_unref(packet);
-	if (frame) av_frame_unref(frame);
+	if (frame)
+		av_frame_unref(frame);
 	av_packet_free(&packet);
 	av_frame_free(&frame);
 	return true;
@@ -1217,7 +1228,8 @@ fail:
 	if (swr_ctx)
 		swr_free(&swr_ctx);
 	av_packet_unref(packet);
-	if (frame) av_frame_unref(frame);
+	if (frame)
+		av_frame_unref(frame);
 	av_packet_free(&packet);
 	av_frame_free(&frame);
 	return false;
@@ -1306,74 +1318,73 @@ static unsigned __stdcall scrcpy_session_worker(void *opaque)
 		if (!scrcpy_command_step(session, "Start ADB server", command))
 			goto cleanup_winsock;
 
-	_snprintf_s(command, sizeof(command), _TRUNCATE,
-		    "\"%s\" -s %s push \"%s\" /data/local/tmp/scrcpy-server.jar", session->adb_path,
-		    session->device_serial, session->server_jar_path);
-	if (!scrcpy_command_step(session, "Push scrcpy server", command))
-		goto cleanup_winsock;
+		_snprintf_s(command, sizeof(command), _TRUNCATE,
+			    "\"%s\" -s %s push \"%s\" /data/local/tmp/scrcpy-server.jar", session->adb_path,
+			    session->device_serial, session->server_jar_path);
+		if (!scrcpy_command_step(session, "Push scrcpy server", command))
+			goto cleanup_winsock;
 
-	_snprintf_s(command, sizeof(command), _TRUNCATE,
-		    "\"%s\" -s %s forward tcp:%hu localabstract:%s", session->adb_path, session->device_serial,
-		    session->local_port, session->socket_name);
-	if (!scrcpy_command_step(session, "Configure adb forward", command))
-		goto cleanup_winsock;
+		_snprintf_s(command, sizeof(command), _TRUNCATE, "\"%s\" -s %s forward tcp:%hu localabstract:%s",
+			    session->adb_path, session->device_serial, session->local_port, session->socket_name);
+		if (!scrcpy_command_step(session, "Configure adb forward", command))
+			goto cleanup_winsock;
 
-	_snprintf_s(command, sizeof(command), _TRUNCATE,
-		    "\"%s\" -s %s shell CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / "
-		    "com.genymobile.scrcpy.Server %s scid=%08x tunnel_forward=true audio=%s control=false "
-		    "video_codec=%s",
-		    session->adb_path, session->device_serial, session->scrcpy_version, session->scid,
-		    session->audio_enabled ? "true" : "false",
-		    session->video_codec);
+		_snprintf_s(command, sizeof(command), _TRUNCATE,
+			    "\"%s\" -s %s shell CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / "
+			    "com.genymobile.scrcpy.Server %s scid=%08x tunnel_forward=true audio=%s control=false "
+			    "video_codec=%s",
+			    session->adb_path, session->device_serial, session->scrcpy_version, session->scid,
+			    session->audio_enabled ? "true" : "false", session->video_codec);
 
-	{
-		size_t len = strlen(command);
-		if (session->video_bit_rate != 8000000) {
-			len += _snprintf_s(command + len, sizeof(command) - len, _TRUNCATE,
-					   " video_bit_rate=%u", session->video_bit_rate);
-		}
+		{
+			size_t len = strlen(command);
+			if (session->video_bit_rate != 8000000) {
+				len += _snprintf_s(command + len, sizeof(command) - len, _TRUNCATE,
+						   " video_bit_rate=%u", session->video_bit_rate);
+			}
 
-		uint16_t max_size = session->max_size;
-		bool has_camera_size = (strcmp(session->video_source, "camera") == 0 &&
-					session->camera_size && session->camera_size[0]);
+			uint16_t max_size = session->max_size;
+			bool has_camera_size = (strcmp(session->video_source, "camera") == 0 && session->camera_size &&
+						session->camera_size[0]);
 
-		if (strcmp(session->video_source, "camera") == 0 && !has_camera_size && max_size == 0) {
-			/*
+			if (strcmp(session->video_source, "camera") == 0 && !has_camera_size && max_size == 0) {
+				/*
 			 * Default to 1920 in camera mode if no limit is set. Cameras often support extreme
 			 * raw resolutions (e.g. 4000x3000) which the device's hardware H.264 encoder cannot
 			 * handle, leading to "Camera configuration error" on startup.
 			 */
-			max_size = 1920;
-		}
+				max_size = 1920;
+			}
 
-		if (max_size > 0 && !has_camera_size) {
-			len += _snprintf_s(command + len, sizeof(command) - len, _TRUNCATE,
-					   " max_size=%hu", max_size);
-		}
-		if (strcmp(session->video_source, "camera") == 0) {
-			len += _snprintf_s(command + len, sizeof(command) - len, _TRUNCATE,
-					   " video_source=camera camera_id=%s", session->camera_id);
-			if (has_camera_size) {
+			if (max_size > 0 && !has_camera_size) {
+				len += _snprintf_s(command + len, sizeof(command) - len, _TRUNCATE, " max_size=%hu",
+						   max_size);
+			}
+			if (strcmp(session->video_source, "camera") == 0) {
 				len += _snprintf_s(command + len, sizeof(command) - len, _TRUNCATE,
-						   " camera_size=%s", session->camera_size);
+						   " video_source=camera camera_id=%s", session->camera_id);
+				if (has_camera_size) {
+					len += _snprintf_s(command + len, sizeof(command) - len, _TRUNCATE,
+							   " camera_size=%s", session->camera_size);
+				}
+			}
+			if (session->audio_enabled) {
+				len += _snprintf_s(command + len, sizeof(command) - len, _TRUNCATE,
+						   " audio_source=%s audio_codec=%s", session->audio_source,
+						   session->audio_codec);
+				if (session->audio_bit_rate != 128000) {
+					len += _snprintf_s(command + len, sizeof(command) - len, _TRUNCATE,
+							   " audio_bit_rate=%u", session->audio_bit_rate);
+				}
 			}
 		}
-		if (session->audio_enabled) {
-			len += _snprintf_s(command + len, sizeof(command) - len, _TRUNCATE,
-					   " audio_source=%s audio_codec=%s", session->audio_source, session->audio_codec);
-			if (session->audio_bit_rate != 128000) {
-				len += _snprintf_s(command + len, sizeof(command) - len, _TRUNCATE,
-						   " audio_bit_rate=%u", session->audio_bit_rate);
-			}
-		}
-	}
 
-	obs_log(LOG_INFO, "scrcpy server command: ...%s",
-		strlen(command) > 80 ? command + strlen(command) - 80 : command);
-	if (!scrcpy_command_fire_and_forget(session, "Start scrcpy app_process server", command))
-		goto cleanup_winsock;
+		obs_log(LOG_INFO, "scrcpy server command: ...%s",
+			strlen(command) > 80 ? command + strlen(command) - 80 : command);
+		if (!scrcpy_command_fire_and_forget(session, "Start scrcpy app_process server", command))
+			goto cleanup_winsock;
 
-	/*
+		/*
 	 * The scrcpy server takes some time to start on the device after
 	 * fire-and-forget launch. connect() may succeed immediately because
 	 * adb forward is already listening, but the server hasn't yet bound
@@ -1381,96 +1392,95 @@ static unsigned __stdcall scrcpy_session_worker(void *opaque)
 	 * connection and the dummy byte read returns EOF. Retry the full
 	 * connect+handshake sequence to account for this race.
 	 */
-	{
-		int max_attempts = 15;
-		int connect_attempt;
-		bool handshake_ok = false;
+		{
+			int max_attempts = 15;
+			int connect_attempt;
+			bool handshake_ok = false;
 
-		/* Camera startup is slower: Camera2 API init, capture session
+			/* Camera startup is slower: Camera2 API init, capture session
 		 * setup, and encoder configuration can take several seconds. */
-		if (strcmp(session->video_source, "camera") == 0) {
-			max_attempts = 25;
-		}
+			if (strcmp(session->video_source, "camera") == 0) {
+				max_attempts = 25;
+			}
 
-		for (connect_attempt = 0; connect_attempt < max_attempts; ++connect_attempt) {
-			if (scrcpy_should_stop(session))
-				goto cleanup_winsock;
+			for (connect_attempt = 0; connect_attempt < max_attempts; ++connect_attempt) {
+				if (scrcpy_should_stop(session))
+					goto cleanup_winsock;
 
-			if (!scrcpy_open_video_socket(session))
-				goto cleanup_winsock;
+				if (!scrcpy_open_video_socket(session))
+					goto cleanup_winsock;
 
-			/*
+				/*
 			 * scrcpy server accepts all sockets (video, then audio, then control)
 			 * BEFORE sending the dummy byte and handshake on the video socket.
 			 * We must connect the audio socket here, otherwise the server will
 			 * block in accept() and our read_handshake will deadlock.
 			 */
-			if (session->audio_enabled && session->on_audio) {
-				if (!scrcpy_open_audio_socket(session)) {
-					if (session->video_socket != INVALID_SOCKET) {
-						shutdown(session->video_socket, SD_BOTH);
-						closesocket(session->video_socket);
-						session->video_socket = INVALID_SOCKET;
+				if (session->audio_enabled && session->on_audio) {
+					if (!scrcpy_open_audio_socket(session)) {
+						if (session->video_socket != INVALID_SOCKET) {
+							shutdown(session->video_socket, SD_BOTH);
+							closesocket(session->video_socket);
+							session->video_socket = INVALID_SOCKET;
+						}
+						Sleep(500);
+						continue;
 					}
-					Sleep(500);
-					continue;
 				}
-			}
 
-			if (scrcpy_read_handshake(session, &codec_id, &width, &height)) {
-				handshake_ok = true;
-				reconnect_attempts = 0;
-				break;
-			}
+				if (scrcpy_read_handshake(session, &codec_id, &width, &height)) {
+					handshake_ok = true;
+					reconnect_attempts = 0;
+					break;
+				}
 
-			/* Handshake failed - server probably not ready. Close sockets and retry. */
-			obs_log(LOG_DEBUG,
-				"scrcpy handshake attempt %d/%d failed, retrying in 500ms",
-				connect_attempt + 1, max_attempts);
-			if (session->video_socket != INVALID_SOCKET) {
-				shutdown(session->video_socket, SD_BOTH);
-				closesocket(session->video_socket);
-				session->video_socket = INVALID_SOCKET;
+				/* Handshake failed - server probably not ready. Close sockets and retry. */
+				obs_log(LOG_DEBUG, "scrcpy handshake attempt %d/%d failed, retrying in 500ms",
+					connect_attempt + 1, max_attempts);
+				if (session->video_socket != INVALID_SOCKET) {
+					shutdown(session->video_socket, SD_BOTH);
+					closesocket(session->video_socket);
+					session->video_socket = INVALID_SOCKET;
+				}
+				if (session->audio_socket != INVALID_SOCKET) {
+					shutdown(session->audio_socket, SD_BOTH);
+					closesocket(session->audio_socket);
+					session->audio_socket = INVALID_SOCKET;
+				}
+				Sleep(500);
 			}
-			if (session->audio_socket != INVALID_SOCKET) {
-				shutdown(session->audio_socket, SD_BOTH);
-				closesocket(session->audio_socket);
-				session->audio_socket = INVALID_SOCKET;
+			if (!handshake_ok) {
+				obs_log(LOG_ERROR, "scrcpy handshake failed after %d attempts", connect_attempt);
+				goto cleanup_winsock;
 			}
-			Sleep(500);
 		}
-		if (!handshake_ok) {
-			obs_log(LOG_ERROR, "scrcpy handshake failed after %d attempts", connect_attempt);
+
+		if (!scrcpy_init_decoder(session, codec_id, &decoder_context))
 			goto cleanup_winsock;
-		}
-	}
 
-	if (!scrcpy_init_decoder(session, codec_id, &decoder_context))
-		goto cleanup_winsock;
-
-	/*
+		/*
 	 * Audio socket is already connected. Start the audio worker on a separate thread
 	 * so video and audio decode loops run concurrently.
 	 */
-	if (session->audio_enabled && session->on_audio) {
-		if (session->audio_socket != INVALID_SOCKET) {
-			uintptr_t audio_handle = _beginthreadex(NULL, 0, scrcpy_audio_worker, session, 0, NULL);
-			if (audio_handle) {
-				session->audio_thread = (HANDLE)audio_handle;
-				obs_log(LOG_INFO, "scrcpy audio worker thread started");
-			} else {
-				obs_log(LOG_WARNING, "failed to start audio worker thread");
+		if (session->audio_enabled && session->on_audio) {
+			if (session->audio_socket != INVALID_SOCKET) {
+				uintptr_t audio_handle = _beginthreadex(NULL, 0, scrcpy_audio_worker, session, 0, NULL);
+				if (audio_handle) {
+					session->audio_thread = (HANDLE)audio_handle;
+					obs_log(LOG_INFO, "scrcpy audio worker thread started");
+				} else {
+					obs_log(LOG_WARNING, "failed to start audio worker thread");
+				}
 			}
 		}
-	}
 
-	if (!scrcpy_decode_loop(session, decoder_context, width, height))
-		obs_log(LOG_WARNING, "scrcpy decode loop exited due to stream error or decode failure");
+		if (!scrcpy_decode_loop(session, decoder_context, width, height))
+			obs_log(LOG_WARNING, "scrcpy decode loop exited due to stream error or decode failure");
 
-	obs_log(LOG_INFO, "scrcpy bootstrap finished for device '%s' on tcp:%hu", session->device_serial,
-		session->local_port);
+		obs_log(LOG_INFO, "scrcpy bootstrap finished for device '%s' on tcp:%hu", session->device_serial,
+			session->local_port);
 
-cleanup_winsock:
+	cleanup_winsock:
 		if (decoder_context)
 			avcodec_free_context(&decoder_context);
 
@@ -1483,10 +1493,11 @@ cleanup_winsock:
 
 		scrcpy_close_stream_handles(session);
 
-		_snprintf_s(command, sizeof(command), _TRUNCATE, "\"%s\" -s %s forward --remove tcp:%hu", session->adb_path,
-			    session->device_serial, session->local_port);
+		_snprintf_s(command, sizeof(command), _TRUNCATE, "\"%s\" -s %s forward --remove tcp:%hu",
+			    session->adb_path, session->device_serial, session->local_port);
 		if (!scrcpy_run_process(session, "Remove adb forward", command, true, true, NULL)) {
-			obs_log(LOG_INFO, "adb forward removal is optional during cleanup for tcp:%hu", session->local_port);
+			obs_log(LOG_INFO, "adb forward removal is optional during cleanup for tcp:%hu",
+				session->local_port);
 		}
 
 		if (scrcpy_should_stop(session))
@@ -1504,11 +1515,12 @@ cleanup_winsock:
 		} else if (reconnect_attempts >= 15) {
 			delay_ms = 5000;
 		}
-		
+
 		obs_log(LOG_INFO, "scrcpy auto-reconnect attempt %d, waiting %d ms...", reconnect_attempts, delay_ms);
-		
+
 		for (int i = 0; i < delay_ms; i += 200) {
-			if (scrcpy_should_stop(session)) break;
+			if (scrcpy_should_stop(session))
+				break;
 			Sleep(200);
 		}
 	}
