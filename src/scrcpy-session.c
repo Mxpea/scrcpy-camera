@@ -754,11 +754,19 @@ static bool scrcpy_decode_loop(struct scrcpy_session *session, AVCodecContext *d
 	uint8_t *codec_config = NULL;
 	size_t codec_config_size = 0;
 
-	if (!packet || !frame || !sw_frame) {
+	/* OPT #8: Pre-allocate a persistent read buffer to avoid av_new_packet malloc/free
+	 * per frame. The buffer auto-grows for large payloads and is reused across frames.
+	 * After avcodec_send_packet returns, the decoder holds its own copy of the data,
+	 * so our buffer is safe to reuse immediately. */
+	size_t read_buf_capacity = 256 * 1024;
+	uint8_t *read_buf = av_malloc(read_buf_capacity + AV_INPUT_BUFFER_PADDING_SIZE);
+
+	if (!packet || !frame || !sw_frame || !read_buf) {
 		obs_log(LOG_ERROR, "unable to allocate ffmpeg packet/frame objects");
 		av_packet_free(&packet);
 		av_frame_free(&frame);
 		av_frame_free(&sw_frame);
+		av_free(read_buf);
 		return false;
 	}
 
@@ -775,9 +783,6 @@ static bool scrcpy_decode_loop(struct scrcpy_session *session, AVCodecContext *d
 		}
 
 		is_session_packet = (header[0] & 0x80U) != 0;
-		/* OPT #5: Removed stale WSAGetLastError() call — read_exact already succeeded
-		 * at this point, so the error code is undefined and the WSAETIMEDOUT check
-		 * was a latent bug that could skip valid frames. */
 		if (is_session_packet) {
 			width = scrcpy_read_be32(header + 4);
 			height = scrcpy_read_be32(header + 8);
@@ -786,26 +791,25 @@ static bool scrcpy_decode_loop(struct scrcpy_session *session, AVCodecContext *d
 		}
 
 		payload_size = scrcpy_read_be32(header + 8);
-		// obs_log(LOG_INFO, "[DEBUG] scrcpy decode loop: packet payload_size=%u bytes (flags=%02x)", payload_size, header[0]);
-		if (payload_size == 0) {
-			// obs_log(LOG_INFO, "[DEBUG] scrcpy packet with empty payload ignored");
+		if (payload_size == 0)
 			continue;
+
+		/* OPT #8: Grow the persistent read buffer if needed (rare, only on resolution increase) */
+		if (payload_size > read_buf_capacity) {
+			av_free(read_buf);
+			read_buf_capacity = (size_t)payload_size * 2;
+			read_buf = av_malloc(read_buf_capacity + AV_INPUT_BUFFER_PADDING_SIZE);
+			if (!read_buf) {
+				obs_log(LOG_ERROR, "scrcpy decode loop: failed to grow read buffer to %zu",
+					read_buf_capacity);
+				break;
+			}
 		}
 
-		av_packet_unref(packet);
-		if (av_new_packet(packet, (int)payload_size) < 0) {
-			obs_log(LOG_ERROR, "scrcpy decode loop: av_new_packet failed for payload_size=%u",
-				payload_size);
-			break;
-		}
-
-		// obs_log(LOG_INFO, "[DEBUG] scrcpy decode loop: waiting for %u bytes of payload...", payload_size);
-		if (!scrcpy_read_exact(session, session->video_socket, packet->data, payload_size)) {
+		if (!scrcpy_read_exact(session, session->video_socket, read_buf, payload_size)) {
 			obs_log(LOG_WARNING, "scrcpy decode loop: failed to read payload (%u bytes)", payload_size);
-			av_packet_unref(packet);
 			break;
 		}
-		// obs_log(LOG_INFO, "[DEBUG] scrcpy decode loop: payload read successfully");
 
 		if ((header[0] & 0x20U) != 0)
 			packet->flags |= AV_PKT_FLAG_KEY;
@@ -817,65 +821,75 @@ static bool scrcpy_decode_loop(struct scrcpy_session *session, AVCodecContext *d
 		 * a complete access unit (SPS + PPS + IDR slice).
 		 */
 		if ((header[0] & 0x40U) != 0) {
-			// obs_log(LOG_INFO, "[DEBUG] scrcpy codec config packet (%u bytes), storing for keyframe", payload_size);
 			av_free(codec_config);
 			codec_config = av_malloc(payload_size);
 			if (!codec_config) {
 				obs_log(LOG_ERROR, "scrcpy decode loop: failed to allocate codec config buffer");
-				av_packet_unref(packet);
 				break;
 			}
-			memcpy(codec_config, packet->data, payload_size);
+			memcpy(codec_config, read_buf, payload_size);
 			codec_config_size = payload_size;
-			av_packet_unref(packet);
+			packet->flags = 0;
 			continue;
 		}
 
 		/*
-		 * If we have stored codec config and this is a keyframe,
-		 * prepend the config data to create a complete access unit.
+		 * OPT #8: If we have stored codec config and this is a keyframe,
+		 * prepend the config data within read_buf using memmove to avoid
+		 * allocating a separate combined AVPacket.
 		 */
 		if (codec_config && (header[0] & 0x20U) != 0) {
 			size_t combined_size = codec_config_size + payload_size;
-			AVPacket *combined = av_packet_alloc();
 
-			// obs_log(LOG_INFO, "[DEBUG] scrcpy prepending %zu bytes codec config to %u byte keyframe",
-			//	codec_config_size, payload_size);
-
-			if (!combined || av_new_packet(combined, (int)combined_size) < 0) {
-				obs_log(LOG_ERROR, "scrcpy decode loop: failed to allocate combined packet");
-				av_packet_free(&combined);
-				av_packet_unref(packet);
-				break;
+			/* Grow buffer if combined data doesn't fit */
+			if (combined_size > read_buf_capacity) {
+				uint8_t *new_buf;
+				read_buf_capacity = combined_size * 2;
+				new_buf = av_malloc(read_buf_capacity + AV_INPUT_BUFFER_PADDING_SIZE);
+				if (!new_buf) {
+					obs_log(LOG_ERROR, "scrcpy decode loop: failed to grow read buffer for "
+							   "codec config prepend (%zu bytes)",
+						combined_size);
+					break;
+				}
+				/* Copy payload into new buffer after codec config position */
+				memcpy(new_buf + codec_config_size, read_buf, payload_size);
+				av_free(read_buf);
+				read_buf = new_buf;
+			} else {
+				/* Shift payload forward to make room for codec config at the front */
+				memmove(read_buf + codec_config_size, read_buf, payload_size);
 			}
 
-			memcpy(combined->data, codec_config, codec_config_size);
-			memcpy(combined->data + codec_config_size, packet->data, payload_size);
-			combined->flags = packet->flags;
-			av_packet_unref(packet);
-
-			/* Swap: use the combined packet from here on. */
-			av_packet_move_ref(packet, combined);
-			av_packet_free(&combined);
+			/* Prepend codec config (SPS/PPS) before the keyframe data */
+			memcpy(read_buf, codec_config, codec_config_size);
+			payload_size = (uint32_t)combined_size;
 
 			av_free(codec_config);
 			codec_config = NULL;
 			codec_config_size = 0;
 		}
 
-		// obs_log(LOG_INFO, "[DEBUG] scrcpy decode loop: sending packet to decoder (size=%d)", packet->size);
+		/* OPT #8: Zero-copy packet setup — point directly at read_buf.
+		 * avcodec_send_packet copies data internally, so read_buf is safe to reuse.
+		 * Padding bytes are required by FFmpeg decoders for SIMD overread safety. */
+		memset(read_buf + payload_size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+		packet->data = read_buf;
+		packet->size = (int)payload_size;
+
 		send_ret = avcodec_send_packet(decoder_context, packet);
-		av_packet_unref(packet);
+		/* Reset packet without freeing — we own read_buf, not the packet */
+		packet->data = NULL;
+		packet->size = 0;
+		packet->flags = 0;
 		if (send_ret < 0 && send_ret != AVERROR(EAGAIN)) {
 			obs_log(LOG_ERROR, "scrcpy decode loop: avcodec_send_packet failed (%d)", send_ret);
 			break;
 		}
-		// obs_log(LOG_INFO, "[DEBUG] scrcpy decode loop: sent packet to decoder (ret=%d)", send_ret);
 
 		for (;;) {
 			int recv_ret = avcodec_receive_frame(decoder_context, frame);
 			if (recv_ret == AVERROR(EAGAIN) || recv_ret == AVERROR_EOF) {
-				// obs_log(LOG_INFO, "[DEBUG] scrcpy decode loop: avcodec_receive_frame returned %d (no more frames for now)", recv_ret);
 				break;
 			}
 			if (recv_ret < 0) {
@@ -884,7 +898,6 @@ static bool scrcpy_decode_loop(struct scrcpy_session *session, AVCodecContext *d
 				av_frame_unref(frame);
 				goto fail;
 			}
-			// obs_log(LOG_INFO, "[DEBUG] scrcpy decode loop: received decoded frame! (format=%d, size=%dx%d)", frame->format, frame->width, frame->height);
 
 			/* OPT #4: Reuse pre-allocated sw_frame instead of alloc/free per HW frame.
 			 * av_frame_unref() releases internal pixel buffers each iteration
@@ -949,7 +962,7 @@ static bool scrcpy_decode_loop(struct scrcpy_session *session, AVCodecContext *d
 	obs_log(LOG_DEBUG, "scrcpy decode loop exiting (stop_requested=%ld)",
 		InterlockedCompareExchange(&session->stop_requested, 0, 0));
 	av_free(codec_config);
-	av_packet_unref(packet);
+	av_free(read_buf);
 	av_frame_unref(frame);
 	av_frame_unref(sw_frame);
 	av_packet_free(&packet);
@@ -959,7 +972,7 @@ static bool scrcpy_decode_loop(struct scrcpy_session *session, AVCodecContext *d
 
 fail:
 	av_free(codec_config);
-	av_packet_unref(packet);
+	av_free(read_buf);
 	av_frame_unref(frame);
 	av_frame_unref(sw_frame);
 	av_packet_free(&packet);
