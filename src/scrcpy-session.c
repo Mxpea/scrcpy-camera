@@ -728,7 +728,18 @@ static bool scrcpy_init_decoder(struct scrcpy_session *session, enum AVCodecID c
 		av_buffer_unref(&hw_device_ctx);
 	}
 
-	context->thread_count = 1; // Explicitly set to 1 to disable frame-threading latency
+	/* OPT #7: Enable slice-threading for software decode to parallelize
+	 * decoding within a single frame without adding latency.
+	 * FF_THREAD_SLICE splits each frame's slices across threads — no extra
+	 * buffering needed, unlike FF_THREAD_FRAME which delays output by N frames.
+	 * HW decoders manage parallelism internally via GPU, so keep thread_count=1. */
+	if (context->hw_device_ctx) {
+		context->thread_count = 1;
+	} else {
+		context->thread_count = 0; /* 0 = auto-detect (typically logical core count) */
+		context->thread_type = FF_THREAD_SLICE;
+		obs_log(LOG_INFO, "software decode: slice-threading enabled (auto thread count)");
+	}
 
 	if (avcodec_open2(context, codec, NULL) < 0) {
 		obs_log(LOG_ERROR, "failed to open ffmpeg decoder");
