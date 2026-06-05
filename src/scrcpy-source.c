@@ -75,12 +75,15 @@ struct scrcpy_source {
 	bool hw_decoding;
 	bool audio_enabled;
 	bool active;
+	bool restart_pending;
+	uint64_t restart_after_ns;
 };
 
 static void scrcpy_source_update(void *data, obs_data_t *settings);
 static int scrcpy_refresh_device_list(struct scrcpy_source *context, obs_property_t *list);
 static bool scrcpy_refresh_button_clicked(obs_properties_t *props, obs_property_t *button, void *data);
 static void scrcpy_source_start_session(struct scrcpy_source *context);
+static void scrcpy_source_tick(void *data, float seconds);
 static void scrcpy_source_stop_session(struct scrcpy_source *context);
 static void scrcpy_source_on_frame(void *opaque, const struct obs_source_frame *frame);
 static void scrcpy_source_on_audio(void *opaque, const struct obs_source_audio *audio);
@@ -209,8 +212,8 @@ static void scrcpy_source_update(void *data, obs_data_t *settings)
 		context->max_size, context->camera_size, context->audio_enabled ? "on" : "off", context->audio_codec);
 
 	if (context->active) {
-		scrcpy_source_stop_session(context);
-		scrcpy_source_start_session(context);
+		context->restart_pending = true;
+		context->restart_after_ns = os_gettime_ns() + 800000000ULL; /* 800 ms debounce */
 	}
 }
 
@@ -396,6 +399,21 @@ static void scrcpy_source_on_audio(void *opaque, const struct obs_source_audio *
 	obs_source_output_audio(context->source, audio);
 }
 
+static void scrcpy_source_tick(void *data, float seconds)
+{
+	UNUSED_PARAMETER(seconds);
+	struct scrcpy_source *context = data;
+	if (!context || !context->restart_pending)
+		return;
+
+	if (os_gettime_ns() < context->restart_after_ns)
+		return;
+
+	context->restart_pending = false;
+	scrcpy_source_stop_session(context);
+	scrcpy_source_start_session(context);
+}
+
 static void scrcpy_source_activate(void *data)
 {
 	struct scrcpy_source *context = data;
@@ -412,6 +430,7 @@ static void scrcpy_source_deactivate(void *data)
 	if (!context)
 		return;
 
+	context->restart_pending = false;
 	context->active = false;
 	scrcpy_source_stop_session(context);
 }
@@ -520,6 +539,7 @@ static struct obs_source_info scrcpy_source_info = {
 	.activate = scrcpy_source_activate,
 	.deactivate = scrcpy_source_deactivate,
 	.update = scrcpy_source_update,
+	.video_tick = scrcpy_source_tick,
 	.get_defaults = scrcpy_source_defaults,
 	.get_properties = scrcpy_source_properties,
 	.get_width = scrcpy_source_get_width,
