@@ -27,7 +27,7 @@ By integrating `scrcpy` directly into OBS Studio, this plugin eliminates the nee
 *Camera and Screen with scrcpy-camera*
 
 ![Low CPU usage with active hardware decoding while using the Camera with scrcpy-camera](web/2.png)
-*Low CPU usage with active hardware decoding while using the Camera with scrcpy-camera*
+*Low CPU usage with active hardware decoding while using the Camera with scrcpy-camera (in 720p30)*
 
 ## Requirements
 
