@@ -16,7 +16,7 @@ By integrating `scrcpy` directly into OBS Studio, this plugin eliminates the nee
 
 - **Direct Android Capture:** Connect to your Android device via ADB and capture its screen or camera directly in OBS.
 - **Screen & Camera Modes:** Choose to mirror the device's screen or use its front/back cameras as a webcam.
-- **Audio Forwarding:** Optionally capture device audio (Android 11+) with support for Opus, AAC, FLAC, and raw PCM codecs.
+- **Audio Forwarding:** Optionally capture device audio (Android 11+) with support for Output, Playback (Android 13+ duplication), and Mic sources plus Opus, AAC, FLAC, and raw PCM codecs.
 - **Hardware Decoding:** Utilizes FFmpeg hardware decoding (CUDA, QSV, D3D11VA, DXVA2) for optimized performance.
 - **Configurable Video Settings:** Adjust video codec (H.264, H.265), bitrate, maximum resolution, and camera size right from the OBS source properties.
 - **Automatic Device Discovery:** Easily select from a list of connected ADB devices.
@@ -51,10 +51,10 @@ By integrating `scrcpy` directly into OBS Studio, this plugin eliminates the nee
    - **Video bitrate:** Set the desired bitrate for the stream.
    - **Max resolution:** Limit the maximum resolution of the stream.
 4. If using **Camera** mode, you can specify the **Camera ID** (e.g., `0` for Back, `1` for Front) and **Camera Size** (e.g., `1920x1080`).
-5. To enable **Audio Forwarding**, check "Enable Audio (Android 11+)" and select your preferred audio codec (Opus, AAC, FLAC, or Raw PCM). You can also adjust the audio bitrate (default: 128 kbps).
+5. To enable **Audio Forwarding**, check "Enable Audio (Android 11+)", choose an **Audio Source** (Output, Playback for Android 13+ duplication audio, or Mic), then select your preferred audio codec (Opus, AAC, FLAC, or Raw PCM). You can also adjust the audio bitrate (default: 128 kbps).
 
 > [!NOTE]
-> Audio forwarding requires **Android 11 or higher**. If your device does not support the Opus encoder, try switching to AAC as a fallback.
+> Audio forwarding requires **Android 11 or higher**. The **Playback** audio source requires **Android 13 or higher**. If your device does not support the Opus encoder, try switching to AAC as a fallback.
 
 ## Building from Source
 
