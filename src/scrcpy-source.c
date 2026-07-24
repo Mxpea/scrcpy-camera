@@ -25,7 +25,10 @@
 
 #ifdef _WIN32
 #include <stdio.h>
+#include <windows.h>
 #endif
+
+#define ADB_CMD_TIMEOUT_MS 3000
 
 #define SETTING_ADB_PATH "adb_path"
 #define SETTING_DEVICE_SERIAL "device_serial"
@@ -270,8 +273,18 @@ static obs_properties_t *scrcpy_source_properties(void *unused)
 
 	obs_property_t *device_list = obs_properties_add_list(props, SETTING_DEVICE_SERIAL, "ADB device",
 							      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	if (device_list)
-		scrcpy_refresh_device_list(context, device_list);
+	if (device_list) {
+		/*
+		 * Auto-scanning adb here would block the OBS UI thread for several
+		 * seconds while adb enumerates devices (and runs mdns services on
+		 * refresh). Defer scanning to the explicit "Refresh device list"
+		 * button so the properties panel opens instantly. Keep the currently
+		 * configured device, if any, so the saved selection is preserved.
+		 */
+		obs_property_list_add_string(device_list, "(Click Refresh to scan)", "");
+		if (context && context->device_serial && context->device_serial[0])
+			obs_property_list_add_string(device_list, context->device_serial, context->device_serial);
+	}
 
 	obs_properties_add_button(props, "refresh_devices", "Refresh device list", scrcpy_refresh_button_clicked);
 	obs_properties_add_path(props, SETTING_SERVER_JAR_PATH, "scrcpy-server.jar path", OBS_PATH_FILE,
@@ -417,20 +430,29 @@ static void scrcpy_source_deactivate(void *data)
 	scrcpy_source_stop_session(context);
 }
 
-static int scrcpy_parse_adb_devices(FILE *pipe, obs_property_t *list)
+static int scrcpy_parse_adb_devices_from_string(const char *text, obs_property_t *list)
 {
-	char line[1024];
+	char buffer[4096];
+	char *line;
+	char *saveptr_outer = NULL;
 	int found = 0;
 
-	while (fgets(line, (int)sizeof(line), pipe) != NULL) {
-		char *cursor = line;
+	_snprintf_s(buffer, sizeof(buffer), _TRUNCATE, "%s", text);
+
+	for (line = strtok_s(buffer, "\r\n", &saveptr_outer); line; line = strtok_s(NULL, "\r\n", &saveptr_outer)) {
+		char cursor_buf[1024];
+		char *cursor;
 		char *serial;
 		char *state;
+		char *saveptr_inner = NULL;
+
+		_snprintf_s(cursor_buf, sizeof(cursor_buf), _TRUNCATE, "%s", line);
+		cursor = cursor_buf;
 
 		while (*cursor == ' ' || *cursor == '\t')
 			++cursor;
 
-		if (!cursor[0] || cursor[0] == '\n' || cursor[0] == '\r')
+		if (!cursor[0] || cursor[0] == '\n')
 			continue;
 
 		if (!strncmp(cursor, "List of devices attached", 24))
@@ -439,22 +461,13 @@ static int scrcpy_parse_adb_devices(FILE *pipe, obs_property_t *list)
 		if (cursor[0] == '*')
 			continue;
 
-		serial = strtok(cursor, " \t\r\n");
-		state = strtok(NULL, " \t\r\n");
+		serial = strtok_s(cursor, " \t\r\n", &saveptr_inner);
+		state = strtok_s(NULL, " \t\r\n", &saveptr_inner);
 		if (!serial || !state)
 			continue;
 
 		if (strcmp(state, "device") != 0)
 			continue;
-
-		/* Trim trailing newlines in-place for a cleaner UI label. */
-		for (size_t i = strlen(cursor); i > 0; --i) {
-			char c = cursor[i - 1];
-			if (c == '\n' || c == '\r')
-				cursor[i - 1] = '\0';
-			else
-				break;
-		}
 
 		obs_property_list_add_string(list, serial, serial);
 		++found;
@@ -463,10 +476,141 @@ static int scrcpy_parse_adb_devices(FILE *pipe, obs_property_t *list)
 	return found;
 }
 
+static int scrcpy_parse_adb_devices(FILE *pipe, obs_property_t *list)
+{
+	char output[4096];
+	size_t total = 0;
+
+	while (total < sizeof(output) - 1 && fgets(output + total, (int)(sizeof(output) - total), pipe) != NULL)
+		total = strlen(output);
+	output[total] = '\0';
+
+	return scrcpy_parse_adb_devices_from_string(output, list);
+}
+
+static bool scrcpy_run_adb_command(const char *adb_path, const char *args, char *output, size_t output_size)
+{
+	char command[1024];
+	STARTUPINFOA si;
+	PROCESS_INFORMATION pi;
+	HANDLE stdout_read = NULL, stdout_write = NULL;
+	SECURITY_ATTRIBUTES sa;
+	DWORD wait_result;
+	bool ok = false;
+
+	_snprintf_s(command, sizeof(command), _TRUNCATE, "cmd.exe /c \"%s\" %s 2>nul", adb_path, args);
+
+	ZeroMemory(&sa, sizeof(sa));
+	sa.nLength = sizeof(sa);
+	sa.bInheritHandle = TRUE;
+
+	if (output && output_size > 0) {
+		if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0))
+			return false;
+		SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
+	}
+
+	ZeroMemory(&si, sizeof(si));
+	si.cb = sizeof(si);
+	si.dwFlags = STARTF_USESHOWWINDOW;
+	si.wShowWindow = SW_HIDE;
+	if (stdout_write)
+		si.dwFlags |= STARTF_USESTDHANDLES, si.hStdOutput = stdout_write;
+
+	ZeroMemory(&pi, sizeof(pi));
+	if (!CreateProcessA(NULL, command, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+		if (stdout_write)
+			CloseHandle(stdout_write);
+		if (stdout_read)
+			CloseHandle(stdout_read);
+		return false;
+	}
+	CloseHandle(pi.hThread);
+
+	wait_result = WaitForSingleObject(pi.hProcess, ADB_CMD_TIMEOUT_MS);
+	if (wait_result == WAIT_TIMEOUT) {
+		TerminateProcess(pi.hProcess, 1);
+		obs_log(LOG_WARNING, "scrcpy: adb command timed out after %d ms: %s", ADB_CMD_TIMEOUT_MS, args);
+	} else {
+		ok = true;
+	}
+
+	if (stdout_read) {
+		DWORD available = 0, bytes_read = 0;
+		size_t total = 0;
+		Sleep(30); /* let adb stdout flush */
+		while (total < output_size - 1 && PeekNamedPipe(stdout_read, NULL, 0, NULL, &available, NULL) && available > 0) {
+			DWORD to_read = (DWORD)(output_size - 1 - total);
+			if (to_read > available)
+				to_read = available;
+			if (!ReadFile(stdout_read, output + total, to_read, &bytes_read, NULL) || bytes_read == 0)
+				break;
+			total += bytes_read;
+		}
+		output[total] = '\0';
+	}
+
+	if (stdout_write)
+		CloseHandle(stdout_write);
+	if (stdout_read)
+		CloseHandle(stdout_read);
+	CloseHandle(pi.hProcess);
+	return ok;
+}
+
+static int scrcpy_discover_mdns_devices(const char *adb_path)
+{
+	char output[4096];
+	char *cursor;
+	int connected = 0;
+
+	if (!scrcpy_run_adb_command(adb_path, "mdns services", output, sizeof(output)))
+		return 0;
+
+	/*
+	 * Sample output:
+	 *   List of discovered mdns services
+	 *   adb-<serial>-<token> (N)\t_adb-tls-connect._tcp\t192.168.0.89:39931
+	 *   adb-<serial>-<token>\t_adb-tls-connect._tcp\t192.168.0.89:41695
+	 *
+	 * We only connect to _adb-tls-connect._tcp entries (not _adb-tls-pairing._tcp).
+	 * The port is unstable on Android 11+ wireless debugging, so we attempt
+	 * adb connect on each discovered address and let adb reject stale ones.
+	 */
+	cursor = output;
+	while (cursor && *cursor) {
+		char *line_end = strpbrk(cursor, "\r\n");
+		char *next = NULL;
+
+		if (line_end) {
+			*line_end = '\0';
+			next = line_end + 1;
+			while (*next == '\r' || *next == '\n')
+				++next;
+		}
+
+		if (strstr(cursor, "_adb-tls-connect._tcp")) {
+			char *tab = strrchr(cursor, '\t');
+			if (tab && strchr(tab + 1, ':')) {
+				char connect_args[128];
+				_snprintf_s(connect_args, sizeof(connect_args), _TRUNCATE, "connect %s", tab + 1);
+				obs_log(LOG_INFO, "scrcpy mdns: attempting adb connect %s", tab + 1);
+				if (scrcpy_run_adb_command(adb_path, connect_args, NULL, 0))
+					++connected;
+			}
+		}
+
+		cursor = line_end ? next : NULL;
+	}
+
+	return connected;
+}
+
 static int scrcpy_refresh_device_list(struct scrcpy_source *context, obs_property_t *list)
 {
 	const char *adb_path = DEFAULT_ADB_PATH;
 	int found = 0;
+	char devices_output[4096];
 
 	if (!list)
 		return 0;
@@ -478,19 +622,29 @@ static int scrcpy_refresh_device_list(struct scrcpy_source *context, obs_propert
 	obs_property_list_add_string(list, "(Select device)", "");
 
 #ifdef _WIN32
-	char command[1024];
-	FILE *pipe;
-
-	_snprintf_s(command, sizeof(command), _TRUNCATE, "\"%s\" devices -l 2>nul", adb_path);
-	pipe = _popen(command, "r");
-	if (!pipe) {
+	if (!scrcpy_run_adb_command(adb_path, "devices -l", devices_output, sizeof(devices_output))) {
 		obs_log(LOG_WARNING, "failed to run adb command using '%s'", adb_path);
 		obs_property_list_add_string(list, "ADB command failed", "");
 		return 0;
 	}
 
-	found = scrcpy_parse_adb_devices(pipe, list);
-	_pclose(pipe);
+	found = scrcpy_parse_adb_devices_from_string(devices_output, list);
+
+	/*
+	 * If no devices were found via adb devices, attempt to discover wireless
+	 * debugging devices via mDNS and auto-connect them. On Android 11+ the
+	 * wireless debugging port changes on every toggle, so a manual adb connect
+	 * is required before the device shows up in the devices list.
+	 */
+	if (found == 0) {
+		obs_log(LOG_INFO, "scrcpy: no devices listed, scanning mDNS for wireless debug devices");
+		if (scrcpy_discover_mdns_devices(adb_path) > 0) {
+			obs_property_list_clear(list);
+			obs_property_list_add_string(list, "(Select device)", "");
+			if (scrcpy_run_adb_command(adb_path, "devices -l", devices_output, sizeof(devices_output)))
+				found = scrcpy_parse_adb_devices_from_string(devices_output, list);
+		}
+	}
 #else
 	UNUSED_PARAMETER(adb_path);
 #endif
