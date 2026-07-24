@@ -1368,13 +1368,23 @@ static unsigned __stdcall scrcpy_session_worker(void *opaque)
 							   " camera_size=%s", session->camera_size);
 				}
 			}
-			if (session->audio_enabled) {
+if (session->audio_enabled) {
 				len += _snprintf_s(command + len, sizeof(command) - len, _TRUNCATE,
 						   " audio_source=%s audio_codec=%s", session->audio_source,
 						   session->audio_codec);
+				/*
+				 * scrcpy playback source defaults to ROUTE_FLAG_LOOP_BACK, which
+				 * silences the device. To match the UI label "Playback
+				 * (Android 13+ Duplication)", force audio_dup=true so the server
+				 * uses ROUTE_FLAG_LOOP_BACK_RENDER and keeps playing on device.
+				 */
+				if (strcmp(session->audio_source, "playback") == 0) {
+					len += _snprintf_s(command + len, sizeof(command) - len, _TRUNCATE,
+							   " audio_dup=true");
+				}
 				if (session->audio_bit_rate != 128000) {
 					len += _snprintf_s(command + len, sizeof(command) - len, _TRUNCATE,
-							   " audio_bit_rate=%u", session->audio_bit_rate);
+						   " audio_bit_rate=%u", session->audio_bit_rate);
 				}
 			}
 		}
