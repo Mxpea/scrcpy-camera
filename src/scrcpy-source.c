@@ -322,6 +322,7 @@ static obs_properties_t *scrcpy_source_properties(void *unused)
 	obs_property_t *audio_source_list = obs_properties_add_list(props, SETTING_AUDIO_SOURCE, "Audio Source",
 								    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 	obs_property_list_add_string(audio_source_list, "Internal Audio (Output)", "output");
+	obs_property_list_add_string(audio_source_list, "Playback (Android 13+ Duplication)", "playback");
 	obs_property_list_add_string(audio_source_list, "Microphone (Mic)", "mic");
 
 	obs_property_t *audio_codec_list = obs_properties_add_list(props, SETTING_AUDIO_CODEC, "Audio codec",
