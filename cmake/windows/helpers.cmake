@@ -31,6 +31,12 @@ function(set_target_properties_plugin target)
     OPTIONAL
   )
 
+  install(
+    FILES $<TARGET_RUNTIME_DLLS:${target}>
+    DESTINATION "${target}/bin/64bit"
+    OPTIONAL
+  )
+
   if(TARGET plugin-support)
     target_link_libraries(${target} PRIVATE plugin-support)
   endif()
@@ -43,6 +49,11 @@ function(set_target_properties_plugin target)
       "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:${target}>"
       "$<$<CONFIG:Debug,RelWithDebInfo,Release>:$<TARGET_PDB_FILE:${target}>>"
       "${CMAKE_CURRENT_BINARY_DIR}/rundir/$<CONFIG>"
+    COMMAND
+      "${CMAKE_COMMAND}" -E copy_if_different
+      $<$<BOOL:$<TARGET_RUNTIME_DLLS:${target}>>:$<TARGET_RUNTIME_DLLS:${target}>>
+      "${CMAKE_CURRENT_BINARY_DIR}/rundir/$<CONFIG>"
+    COMMAND_EXPAND_LISTS
     COMMENT "Copy ${target} to rundir"
     VERBATIM
   )
